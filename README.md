@@ -41,7 +41,37 @@
 | **Dynamic TopK** | Confidence に基づく動的な取得件数制御（3〜8件を自動調整） |
 | **Extractive Compression** | 文レベルの関連性判定による抽出圧縮。LLM入力のノイズとトークンコストを削減 |
 
-これにより、不要なAPIコストとレイテンシを削減し、**企業利用に耐える高精度な Production RAG** を実現します。
+### Phase 3: Agentic RAG Control Plane (v3)（✅ 実装完了）
+
+Phase 3では、単なる直列パイプラインから**自律的かつ適応的なControl Plane**へと進化し、システムのレイテンシ予算（Budget）に応じた最適な経路選択（Graceful Degradation）や比較タスク専用のパイプラインを実現しています。
+
+#### Sprint 1: Lazy Decomposition & Dual Critic
+
+| 機能 | 概要 |
+| :--- | :--- |
+| **Retrieval Critic** | 検索結果だけで質問に回答可能か（Coverage/Relevance）をLLMで事前評価し、不足している場合のみ再検索（Decompose/Rewrite）を行う |
+| **Answer Critic** | 最終生成された回答がハルシネーションを含んでいないか、質問の全側面に答えているかを評価し、Confidenceを補正 |
+| **Lazy Decomposition** | 最初からクエリを分解するのではなく、初回検索で情報が不足している（Retrieval CriticがINSUFFICIENT）場合にのみSub-queryに分解して並列検索する遅延評価 |
+| **Reranker Feature Flag** | 状況に応じて Cohere Reranker をON/OFFできる切り替え機能（デフォルトはコスト・レイテンシ考慮でOFF） |
+
+#### Sprint 2: Control Plane & Budget Management
+
+| 機能 | 概要 |
+| :--- | :--- |
+| **Budget-aware Routing** | クエリの複雑度（Low/Medium/High）に応じて初期のレイテンシ予算（ms）を動的に割り当て、全体の実行時間を管理 |
+| **Graceful Degradation** | 残り予算（`remaining_budget_ms`）が逼迫した場合、RerankやCriticなどの高コスト処理をスキップし、安全に回答生成（Generate）へ直行する仕組み |
+| **Dynamic Critic Skip** | 検索スコア（Confidence）が十分に高く、チャンク数も揃っている場合は、予算節約のためにCritic評価を動的にスキップする最適化 |
+| **Degradation Warning** | 予算不足により処理をスキップした場合、レスポンスに `warning`（例：「一部の検索工程を省略して回答を生成しました」）を付与して品質レベルを透明化 |
+
+#### Sprint 3: Heuristic Routing & Compare Pipeline
+
+| 機能 | 概要 |
+| :--- | :--- |
+| **Heuristic Router** | LLM Routerを呼び出す前に、ルールベース（文字数、キーワード等）でクエリ種別（`calc`, `compare`, `definition`, `direct`）を高速判定しレイテンシを削減 |
+| **Compare Pipeline** | 「AとBの違い」等の比較クエリに対し、専用ノード（`compare_extract` → `compare_retrieve`並列 → `compare_merge` → `compare_generate`）で網羅的な比較回答を高速に生成 |
+| **Max Pooling Merge** | 複数Sub-queryやCompareでの検索結果をマージする際、同一チャンクの重複を排除し最大スコアを採用する統合ロジック |
+
+これにより、不要なAPIコストとレイテンシを削減し、**企業利用に耐える高精度かつ自律的な Production RAG** を実現します。
 
 ---
 
