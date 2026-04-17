@@ -1,18 +1,18 @@
 [
   {
-    "question": "What is RAG?",
-    "expected_answer": "RAG (Retrieval-Augmented Generation) is a technique that enhances large language models by retrieving relevant information from an external knowledge base before generating a response."
+    "question": "RAGとは何ですか？",
+    "expected_answer": "RAG (Retrieval-Augmented Generation) は、回答を生成する前に外部ナレッジベースから関連情報を取得することで、大規模言語モデルを強化する手法です。"
   },
   {
-    "question": "What is pgvector?",
-    "expected_answer": "pgvector is an open-source vector similarity search for PostgreSQL. It supports exact and approximate nearest neighbor search."
+    "question": "pgvectorとは何ですか？",
+    "expected_answer": "pgvector は PostgreSQL 用のオープンソースのベクトル類似性検索拡張機能です。完全一致および近似最近傍探索をサポートしています。"
   },
   {
-    "question": "What is LangGraph used for?",
-    "expected_answer": "LangGraph is a library for building stateful, multi-actor applications with LLMs. It lets you create cyclic graphs for agentic workflows."
+    "question": "LangGraphは何に使われますか？",
+    "expected_answer": "LangGraph は、LLMを使用してステートフルなマルチアクターアプリケーションを構築するためのライブラリです。エージェンティックなワークフローのための循環グラフを作成できます。"
   },
   {
-    "question": "Tell me about FastAPI.",
-    "expected_answer": "FastAPI is a modern, fast (high-performance), web framework for building APIs with Python 3.8+ based on standard Python type hints."
+    "question": "FastAPIについて教えてください。",
+    "expected_answer": "FastAPI は、標準の Python 型ヒントに基づいて Python 3.8+ で API を構築するための、モダンで高速な（高性能な）Web フレームワークです。"
   }
 ]

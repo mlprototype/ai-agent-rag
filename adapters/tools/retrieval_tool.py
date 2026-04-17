@@ -4,10 +4,10 @@ from domain.services.retrieval_service import RetrievalService
 @tool
 async def retrieval_tool(query: str) -> str:
     """
-    Search the knowledge base for information relevant to the query.
-    Use this tool when you need to answer questions about RAG, LangGraph, pgvector, or FastAPI.
+    クエリに関連する情報をナレッジベースから検索します。
+    RAG、LangGraph、pgvector、またはFastAPIに関する質問に答える必要がある場合にこのツールを使用してください。
     """
-    # The tool now acts purely as a Framework Adapter.
-    # It delegates all business logic (search, timeout, formatting, error handling)
-    # to the Domain Service.
+    # このツールは純粋なフレームワークアダプターとして機能します。
+    # すべてのビジネスロジック（検索、タイムアウト、フォーマット、エラー処理）を
+    # ドメインサービスに委譲します。
     return await RetrievalService.search_knowledge_base(query)

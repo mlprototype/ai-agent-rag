@@ -5,7 +5,7 @@ from langchain_core.documents import Document
 from infrastructure.retrieval.embedding import get_embeddings
 
 def get_connection_string() -> str:
-    """Read DB parameters from environment and return psycopg string."""
+    """環境変数からDBパラメータを読み取り、psycopg形式の接続文字列を返します。"""
     user = os.getenv("POSTGRES_USER", "admin")
     password = os.getenv("POSTGRES_PASSWORD", "password")
     host = os.getenv("POSTGRES_HOST", "localhost")
@@ -15,23 +15,23 @@ def get_connection_string() -> str:
     return f"postgresql+psycopg://{user}:{password}@{host}:{port}/{db}"
 
 def get_vector_store() -> PGVector:
-    """Instantiate and return the PGVector store. Automatically creates tables if not exist."""
+    """PGVectorストアをインスタンス化して返します。テーブルが存在しない場合は自動的に作成されます。"""
     connection_string = get_connection_string()
     embeddings = get_embeddings()
 
-    # The collection name could be anything, let's configure a default
+    # コレクション名は任意ですが、ここではデフォルトを設定します
     collection_name = "agentic_rag_docs"
 
     vector_store = PGVector(
         embeddings=embeddings,
         collection_name=collection_name,
         connection=connection_string,
-        use_jsonb=True, # Stores metadata as JSONB for better performance
+        use_jsonb=True, # パフォーマンス向上のため、メタデータをJSONBとして保存します
     )
     return vector_store
 
 def get_async_vector_store() -> PGVector:
-    """Instantiate and return an async PGVector store using async psycopg engine."""
+    """非同期psycopgエンジンを使用して、非同期PGVectorストアをインスタンス化して返します。"""
     connection_string = get_connection_string().replace("postgresql+psycopg", "postgresql+psycopg_async")
     
     embeddings = get_embeddings()
@@ -48,38 +48,38 @@ def get_async_vector_store() -> PGVector:
     return vector_store
 
 def seed_database_if_empty():
-    """Helper method to seed the database with initial documents for testing."""
+    """テスト用に初期ドキュメントをデータベースにシードするためのヘルパーメソッド。"""
     vector_store = get_vector_store()
     
-    # Check if there are already documents
-    # A simple way to check is to try a dummy search
+    # 既にドキュメントがあるか確認
+    # シンプルな確認方法として、ダミー検索を試みる
     results = vector_store.similarity_search("test", k=1)
     if len(results) > 0:
-        print("Database already contains documents. Skipping seed.")
+        print("データベースに既にドキュメントが存在します。シードをスキップします。")
         return
 
-    print("Seeding database with sample documents...")
+    print("サンプルドキュメントを使用してデータベースにシード中...")
     sample_docs = [
         Document(
-            page_content="RAG (Retrieval-Augmented Generation) is a technique that enhances large language models by retrieving relevant information from an external knowledge base before generating a response.",
-            metadata={"source": "AI Glossary", "topic": "RAG"}
+            page_content="RAG (Retrieval-Augmented Generation) は、回答を生成する前に外部ナレッジベースから関連情報を取得することで、大規模言語モデルを強化する手法です。",
+            metadata={"source": "AI用語集", "topic": "RAG"}
         ),
         Document(
-            page_content="LangGraph is a library for building stateful, multi-actor applications with LLMs. It lets you create cyclic graphs for agentic workflows.",
-            metadata={"source": "LangChain Docs", "topic": "LangGraph"}
+            page_content="LangGraph は、LLMを使用してステートフルなマルチアクターアプリケーションを構築するためのライブラリです。エージェンティックなワークフローのための循環グラフを作成できます。",
+            metadata={"source": "LangChainドキュメント", "topic": "LangGraph"}
         ),
         Document(
-            page_content="pgvector is an open-source vector similarity search for PostgreSQL. It supports exact and approximate nearest neighbor search.",
-            metadata={"source": "pgvector README", "topic": "Database"}
+            page_content="pgvector は PostgreSQL 用のオープンソースのベクトル類似性検索です。完全一致および近似最近傍探索をサポートしています。",
+            metadata={"source": "pgvector README", "topic": "データベース"}
         ),
         Document(
-            page_content="FastAPI is a modern, fast (high-performance), web framework for building APIs with Python 3.8+ based on standard Python type hints.",
-            metadata={"source": "FastAPI Docs", "topic": "Web Framework"}
+            page_content="FastAPI は、標準の Python 型ヒントに基づいて Python 3.8+ で API を構築するための、モダンで高速な（高性能な）Web フレームワークです。",
+            metadata={"source": "FastAPIドキュメント", "topic": "Webフレームワーク"}
         )
     ]
     
     vector_store.add_documents(sample_docs)
-    print("Seeding complete.")
+    print("シード完了。")
 
 if __name__ == "__main__":
     from dotenv import load_dotenv

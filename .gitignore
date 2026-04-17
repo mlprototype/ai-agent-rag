@@ -44,3 +44,9 @@ __pypackages__/
 
 # Local docs output
 docs/
+
+.gemini/
+
+_all_project_code.txt
+
+merge_code.py

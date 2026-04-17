@@ -1,18 +1,21 @@
 from dotenv import load_dotenv
 import os
 
-# Load environment variables from .env file
+# .envファイルから環境変数をロード
 load_dotenv()
 
 from application.services.chat_service import ChatService
 from application.dto.chat_models import ChatRequest
 
 import asyncio
+import uuid
 
 async def main():
-    print("Welcome to the Agentic RAG Phase 1 Agent!")
+    print("Welcome to the Agentic RAG Phase 2.5 Agent!")
     print("Make sure you have set OPENAI_API_KEY in your .env file.")
     print("Type 'exit' to quit.\n")
+    
+    session_id = str(uuid.uuid4())
     
     while True:
         try:
@@ -20,14 +23,23 @@ async def main():
             if user_input.lower() in ["exit", "quit"]:
                 break
                 
-            request = ChatRequest(question=user_input)
+            request = ChatRequest(session_id=session_id, question=user_input)
             
-            # Using our new application service synchronously
+            # 新しいアプリケーションサービスを同期的に呼び出す
             response = await ChatService.ask_question(request)
             
-            print(f"Agent: {response.answer}")
-            for source in response.sources:
-                print(f" - Source: {source.id}")
+            print(f"\nAgent: {response.answer}")
+            print(f"  Confidence: {response.confidence}")
+            if response.warning:
+                print(f"  Warning: {response.warning}")
+            if response.sources:
+                print("  Sources:")
+                for source in response.sources:
+                    print(
+                        f"    - {source.doc_id} "
+                        f"(hybrid: {source.hybrid_score:.4f}, vec: {source.vector_score:.4f}, "
+                        f"bm25: {source.bm25_score:.4f}, rerank: {source.rerank_score:.4f})"
+                    )
 
         except EOFError:
             break
