@@ -334,7 +334,89 @@ ai-agent-rag/
 ├── docker-compose.yml                       # pgvector コンテナ定義
 ├── .env.example                             # 環境変数テンプレート
 │
+├── config/                                  # --- Configuration Layer ---
+│   └── settings.py                          #   環境変数・レイテンシ予算・しきい値設定
+│
 ├── api/                                     # --- API / Interface Layer ---
+│   ├── main.py                              #   FastAPI アプリケーション (v2.0.0)
+│   └── routers/
+│       └── ingest.py                        #   POST /ingest/file, /ingest/directory
+│
+├── application/                             # --- Application Layer ---
+│   ├── agents/
+│   │   ├── graph.py                         #   LangGraph ステートグラフ定義 + Control Plane
+│   │   └── state.py                         #   AgentState定義 (メタデータ・予算情報保持)
+│   ├── dto/
+│   │   └── chat_models.py                   #   ChatRequest / ChatResponse / Source
+│   ├── interfaces/
+│   │   └── conversation_memory.py           #   ConversationMemory ABC (DIP)
+│   └── services/
+│       └── chat_service.py                  #   ユースケース + Citation抽出 + Confidence取得
+│
+├── domain/                                  # --- Domain Layer ---
+│   ├── models/
+│   │   └── retrieval_models.py              #   RetrievedChunk / RewriteResult / CompressionResult
+│   └── services/
+│       ├── router.py                        #   経路ルーティング (Heuristic + LLM)
+│       ├── heuristic_router.py              #   Heuristic分類ルール
+│       ├── retrieval_budget.py              #   レイテンシ予算管理 (Graceful Degradation)
+│       ├── retrieval_service.py             #   5ステージ検索パイプライン (オーケストレーション)
+│       ├── query_decomposer.py              #   Lazy Decomposition / Query Rewrite
+│       ├── result_merger.py                 #   Max Pooling Merge (検索結果統合)
+│       ├── retrieval_critic.py              #   Retrieval Critic (検索結果の品質評価)
+│       ├── answer_critic.py                 #   Answer Critic (最終回答の検証)
+│       ├── compare_intent.py                #   Compare経路: エンティティ抽出
+│       ├── compare_retrieval.py             #   Compare経路: 並列検索
+│       ├── compare_merge.py                 #   Compare経路: コンテキスト統合
+│       ├── confidence.py                    #   Stage 3: Confidence 算出 + Dynamic TopK
+│       ├── coverage_checker.py              #   回答の網羅性チェック
+│       ├── prompt_loader.py                 #   Prompt Ops (ローカル/Hub同期読込)
+│       └── ...                              #   (HybridSearch / ExtractiveCompressor 等)
+│
+├── adapters/                                # --- Adapters Layer ---
+│   └── tools/
+│       ├── retrieval_tool.py                #   LangChain @tool ラッパー（検索）
+│       └── calculator.py                    #   LangChain @tool ラッパー（計算）
+│
+├── infrastructure/                          # --- Infrastructure Layer ---
+│   ├── ingestion/
+│   │   └── unstructured_loader.py           #   unstructured パーサー (MD/HTML/TXT)
+│   ├── memory/
+│   │   └── in_memory_memory.py              #   MemorySaver ラッパー (InMemory実装)
+│   └── retrieval/
+│       ├── reranker.py                      #   Cohere Reranker / Passthrough (Feature Flag)
+│       ├── vector_store.py                  #   pgvector 接続・シード・非同期対応
+│       ├── keyword_search.py                #   PostgreSQL FTS (tsvector / ts_rank)
+│       ├── embedding.py                     #   OpenAI Embeddings (text-embedding-3-small)
+│       └── chunking.py                      #   SemanticChunker (コサイン類似度パーセンタイル)
+│
+├── prompts/                                 # --- Prompt Ops ---
+│   ├── router/                              #   Router用プロンプト
+│   ├── decompose/                           #   Decomposer用プロンプト
+│   ├── rewrite/                             #   Rewrite用プロンプト
+│   ├── retrieval_critic/                    #   Retrieval Critic用プロンプト
+│   ├── answer_critic/                       #   Answer Critic用プロンプト
+│   └── generate/                            #   Generate(回答生成)用プロンプト
+│
+├── tools/                                   # --- 運用ツール ---
+│   └── sync_prompts_from_hub.py             #   LangSmith Hub からの Prompt 同期スクリプト
+│
+├── scripts/                                 # --- ベンチマーク・検証用スクリプト ---
+│   ├── benchmark_router.py                  #   Routerベンチマーク
+│   └── benchmark_compare.py                 #   Compare Pipeline ベンチマーク
+│
+├── evaluation/                              # --- 評価パイプライン ---
+│   ├── evaluate.py                          #   Recall@3 + Answer Similarity 自動評価
+│   └── dataset.json                         #   評価用データセット
+│
+└── docs/                                    # --- 設計ドキュメント ---
+    ├── phase2-production-rag.md             #   Phase 2 設計書
+    ├── phase2-5-design.md                   #   Phase 2.5 設計書
+    └── phase3-agentic-retrieval-v2.md       #   Phase 3 設計書 (v3/Control Plane)
+```
+
+---
+ API / Interface Layer ---
 │   ├── main.py                              #   FastAPI アプリケーション (v2.0.0)
 │   └── routers/
 │       └── ingest.py                        #   POST /ingest/file, /ingest/directory
