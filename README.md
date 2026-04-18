@@ -97,33 +97,33 @@ flowchart TD
     API["api/main.py (FastAPI)"]
     
     subgraph Application ["Application Layer (ユースケース・ワークフロー)"]
-        ChatService["ChatService\n(Citation抽出 / Confidence取得)"]
-        Agent["LangGraph Agent\n(graph.py)"]
+        ChatService["ChatService<br/>(Citation抽出 / Confidence取得)"]
+        Agent["LangGraph Agent<br/>(graph.py)"]
         DTO["ChatRequest / ChatResponse / Source"]
-        Memory_IF["ConversationMemory\n(Abstract Interface)"]
+        Memory_IF["ConversationMemory<br/>(Abstract Interface)"]
     end
     
     subgraph Domain ["Domain Layer (ビジネスロジック)"]
-        RetrievalService["RetrievalService\n(5ステージ パイプライン)"]
-        QueryRewriter["QueryRewriter\n(LLM クエリ書き換え)"]
-        HybridSearch["HybridSearch\n(Vector + Keyword 統合)"]
+        RetrievalService["RetrievalService<br/>(5ステージ パイプライン)"]
+        QueryRewriter["QueryRewriter<br/>(LLM クエリ書き換え)"]
+        HybridSearch["HybridSearch<br/>(Vector + Keyword 統合)"]
         ConfEstimator["ConfidenceEstimator\n(Confidence + Dynamic TopK)"]
-        Compressor["ExtractiveCompressor\n(文レベル抽出圧縮)"]
-        IngestionService["IngestionService\n(取り込みオーケストレーション)"]
+        Compressor["ExtractiveCompressor<br/>(文レベル抽出圧縮)"]
+        IngestionService["IngestionService<br/>(取り込みオーケストレーション)"]
     end
     
     subgraph Adapters ["Adapters Layer (Framework Adapter)"]
-        RetrievalTool["retrieval_tool\n(LangChain @tool)"]
-        Calculator["calculator\n(LangChain @tool)"]
+        RetrievalTool["retrieval_tool<br/>(LangChain @tool)"]
+        Calculator["calculator<br/>(LangChain @tool)"]
     end
     
     subgraph Infrastructure ["Infrastructure Layer (DB・外部依存)"]
-        VectorStore[("pgvector\n(vector_store.py)")]
-        KeywordSearchDB["KeywordSearch\n(PostgreSQL FTS)"]
-        Embedding["OpenAI Embeddings\n(text-embedding-3-small)"]
-        Chunker["SemanticChunker\n(chunking.py)"]
-        Loader["UnstructuredLoader\n(unstructured_loader.py)"]
-        MemoryImpl["InMemoryConversationMemory\n(MemorySaver)"]
+        VectorStore[("pgvector<br/>(vector_store.py)")]
+        KeywordSearchDB["KeywordSearch<br/>(PostgreSQL FTS)"]
+        Embedding["OpenAI Embeddings<br/>(text-embedding-3-small)"]
+        Chunker["SemanticChunker<br/>(chunking.py)"]
+        Loader["UnstructuredLoader<br/>(unstructured_loader.py)"]
+        MemoryImpl["InMemoryConversationMemory<br/>(MemorySaver)"]
     end
 
     CLI --> ChatService
@@ -166,12 +166,12 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    Q["ユーザークエリ"] --> S1["Stage 1\nQuery Rewrite"]
-    S1 --> S2["Stage 2\nHybrid Search"]
-    S2 --> S3["Stage 3\nConfidence\n+ Dynamic TopK"]
-    S3 --> S4["Stage 4\nExtractive\nCompression"]
-    S4 --> S5["Stage 5\n構造化JSON出力"]
-    S5 --> LLM["LLM\n(回答生成)"]
+    Q["ユーザークエリ"] --> S1["Stage 1<br/>Query Rewrite"]
+    S1 --> S2["Stage 2<br/>Hybrid Search"]
+    S2 --> S3["Stage 3<br/>Confidence<br/>+ Dynamic TopK"]
+    S3 --> S4["Stage 4<br/>Extractive<br/>Compression"]
+    S4 --> S5["Stage 5<br/>構造化JSON出力"]
+    S5 --> LLM["LLM<br/>(回答生成)"]
 ```
 
 各ステージの詳細:
@@ -192,12 +192,12 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    Q["ユーザークエリ"] --> H{"Heuristic\nRouter"}
+    Q["ユーザークエリ"] --> H{"Heuristic<br/>Router"}
     H -->|"greeting / short"| D["direct_answer"]
     H -->|"数式パターン"| C["calculator"]
-    H -->|"AとBの違い / vs"| CMP["compare\n(compare_fast_path)"]
-    H -->|"Xとは / 定義"| DEF["definition\n(agentic_retrieval)"]
-    H -->|"マッチなし"| LLM{"LLM Router\n(GPT-4o-mini)"}
+    H -->|"AとBの違い / vs"| CMP["compare<br/>(compare_fast_path)"]
+    H -->|"Xとは / 定義"| DEF["definition<br/>(agentic_retrieval)"]
+    H -->|"マッチなし"| LLM{"LLM Router<br/>(GPT-4o-mini)"}
     LLM -->|"成功"| RES["判定結果に従う"]
     LLM -->|"タイムアウト"| FB["fallback_retrieval"]
 ```
@@ -218,10 +218,10 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    CE["compare_extract\n(正規表現で A/B 抽出)"] -->|"抽出成功"| CR["compare_retrieve\n(A/B 並列検索)"]
-    CE -->|"抽出失敗"| FB["agentic_retrieval\nフォールバック"]
-    CR --> CM["compare_merge\n(context 統合 + coverage 判定)"]
-    CM -->|"coverage OK"| CG["compare_generate\n(専用プロンプトで構造化回答)"]
+    CE["compare_extract<br/>(正規表現で A/B 抽出)"] -->|"抽出成功"| CR["compare_retrieve<br/>(A/B 並列検索)"]
+    CE -->|"抽出失敗"| FB["agentic_retrieval<br/>フォールバック"]
+    CR --> CM["compare_merge<br/>(context 統合 + coverage 判定)"]
+    CM -->|"coverage OK"| CG["compare_generate<br/>(専用プロンプトで構造化回答)"]
     CM -->|"coverage NG"| FB
     CG --> QG["commit_answer"]
 ```
@@ -238,11 +238,15 @@ flowchart TD
 
 `query_type=retrieval_complex` のクエリに対し、予算管理と段階的縮退を適用します。
 
+#### Strict RAG Policy (ハルシネーション抑止)
+`retrieval_complex` ルートでは、**「検索結果にない情報を一般知識で補完すること」を厳格に禁止** しています。
+ナレッジベース（KB）内に十分な説明チャンクが存在しない、あるいは検索が失敗した場合、LLMは推測で回答せず「検索結果に十分な情報が見つかりませんでした」と応答します。これは、企業利用において誤った知識（ハルシネーション）の提供を避けるための意図的な UX（Strict RAG Policy）です。
+
 ```mermaid
 flowchart LR
-    B["初期予算\n15,000ms"] --> R["generate 予約\n3,000ms"]
-    R --> C["commit 予約\n500ms"]
-    C --> U["残り = 使用可能予算\n11,500ms"]
+    B["初期予算<br/>15,000ms"] --> R["generate 予約<br/>3,000ms"]
+    R --> C["commit 予約<br/>500ms"]
+    C --> U["残り = 使用可能予算<br/>11,500ms"]
     U --> |"rerank可?"| RK{"≥1,000ms"}
     U --> |"critic可?"| CK{"≥1,500ms"}
     U --> |"rewrite可?"| RW{"≥3,000ms"}
@@ -266,12 +270,12 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    Src["ファイルアップロード\n(MD / HTML / TXT)"] --> Load["Loader\n(存在確認)"]
-    Load --> Parse["Parser\n(unstructured)"]
-    Parse --> Clean["Cleaner\n(空白正規化 / Unicode)"]
-    Clean --> Chunk["Semantic Chunker\n(コサイン類似度\nパーセンタイル方式)"]
-    Chunk --> Embed["Embedding\n(text-embedding-3-small)"]
-    Embed --> Upsert[("pgvector\nUpsert")]
+    Src["ファイルアップロード<br/>(MD / HTML / TXT)"] --> Load["Loader<br/>(存在確認)"]
+    Load --> Parse["Parser<br/>(unstructured)"]
+    Parse --> Clean["Cleaner<br/>(空白正規化 / Unicode)"]
+    Clean --> Chunk["Semantic Chunker<br/>(コサイン類似度<br/>パーセンタイル方式)"]
+    Chunk --> Embed["Embedding<br/>(text-embedding-3-small)"]
+    Embed --> Upsert[("pgvector<br/>Upsert")]
 ```
 
 ---
@@ -595,7 +599,7 @@ ai-agent-rag/
 | **Router & Others** | | |
 | `ROUTER_HEURISTIC_ENABLED` | `true` | ルールベース Router の有効化 |
 | `ROUTER_HEURISTIC_COMPARE_ENABLED` | `true` | Compare ヒューリスティックの有効化 |
-| `ROUTER_BUDGET_MS` | `500` | Router 処理に割り当てる予算 |
+| `ROUTER_BUDGET_MS` | `1500` | Router 処理に割り当てる予算（推論タイムアウト抑止のための暫定運用値であり、観測ベースで再評価前提） |
 | `PROMPT_NAMESPACE` | `my-rag` | LangSmith Hub 同期時に使う namespace |
 | `LANGCHAIN_TRACING_V2` | `true` | LangSmith トレーシング有効化 |
 | `PREWARM_FAIL_FAST` | `true` | 起動時の Prompt 読込失敗でプロセスを落とすか |

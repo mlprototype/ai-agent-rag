@@ -21,20 +21,40 @@ class ChatService:
     """
 
     @staticmethod
-    def _extract_sources(state) -> list[Source]:
+    def _extract_sources(state, answer: str) -> tuple[list[Source], int]:
+        import re
+        raw_sources = state.get("sources", [])
+        if not raw_sources:
+            return [], 0
+            
+        # [1], [1, 2], [1][2] などの様々な形式から数字を抽出
+        cited_ids_str = re.findall(r"\[([\d,\s]+)\]", answer)
+        cited_ids = set()
+        for cid_group in cited_ids_str:
+            for cid in cid_group.split(","):
+                cid = cid.strip()
+                if cid.isdigit():
+                    cited_ids.add(int(cid))
+        
+        if not cited_ids:
+            return [], len(raw_sources)
+
         sources = []
-        for src in state.get("sources", []):
-            sources.append(Source(
-                doc_id=src.get("doc_id", "不明"),
-                chunk_id=src.get("chunk_id", ""),
-                snippet=src.get("snippet", ""),
-                score=src.get("hybrid_score", src.get("score", 0.0)),
-                hybrid_score=src.get("hybrid_score", 0.0),
-                vector_score=src.get("vector_score", 0.0),
-                bm25_score=src.get("bm25_score", 0.0),
-                rerank_score=src.get("rerank_score", 0.0),
-            ))
-        return sources
+        for src in raw_sources:
+            citation_id = src.get("citation_id")
+            if citation_id in cited_ids:
+                sources.append(Source(
+                    citation_id=citation_id,
+                    doc_id=src.get("doc_id", "不明"),
+                    chunk_id=src.get("chunk_id", ""),
+                    snippet=src.get("snippet", ""),
+                    score=src.get("hybrid_score", src.get("score", 0.0)),
+                    hybrid_score=src.get("hybrid_score", 0.0),
+                    vector_score=src.get("vector_score", 0.0),
+                    bm25_score=src.get("bm25_score", 0.0),
+                    rerank_score=src.get("rerank_score", 0.0),
+                ))
+        return sources, len(raw_sources) - len(sources)
 
     @staticmethod
     async def ask_question(request: ChatRequest) -> ChatResponse:
@@ -52,17 +72,30 @@ class ChatService:
 
         query_type = final_state.get("query_type")
         route = final_state.get("route")
+        answer = final_state.get("answer", "")
         
         total_latency_ms = int((time.monotonic() - started_at) * 1000)
         timeout_stages = list(final_state.get("timeout_stages", []))
         fallback_stages = list(final_state.get("fallback_stages", []))
         critique_reason = final_state.get("critique_reason", "")
+        warning_codes = final_state.get("warning_codes", [])
+        
         critic_degraded = bool(
             final_state.get("retrieval_critic_skipped_reason")
             or final_state.get("answer_critic_skipped_reason")
             or critique_reason.startswith("critic_fallback:")
             or final_state.get("retrieval_degraded")
         )
+
+        if route in ("calculator", "direct_answer"):
+            sources = None
+            filtered_count = 0
+            confidence = 1.0 if route == "calculator" else None
+            warning = None
+        else:
+            sources, filtered_count = ChatService._extract_sources(final_state, answer)
+            confidence = round(final_state.get("confidence", 0.5), 2)
+            warning = final_state.get("warning")
 
         logger.info(
             {
@@ -74,31 +107,25 @@ class ChatService:
                 "router_timeout": "router" in timeout_stages,
                 "decompose_timeout": any(stage in {"decompose", "rewrite"} for stage in timeout_stages),
                 "critic_degraded": critic_degraded,
-                "final_confidence": round(final_state.get("confidence", 0.5), 2),
+                "final_confidence": confidence,
                 "timeout_stage": timeout_stages,
                 "fallback_used": bool(fallback_stages),
                 "fallback_level": final_state.get("fallback_level", "full_path"),
                 "partial_retrieval_used": final_state.get("partial_retrieval_used", False),
                 "retrieval_timeout_count": final_state.get("retrieval_timeout_count", 0),
                 "retrieval_success_count": final_state.get("retrieval_success_count", 0),
-                "warning_codes": final_state.get("warning_codes", []),
+                "warning_codes": warning_codes,
                 "retrieval_quality_level": final_state.get("retrieval_quality_level", "high"),
                 "remaining_budget_ms_at_generate": final_state.get("remaining_budget_ms_at_generate", 0),
                 "skipped_stages": final_state.get("skipped_stages", []),
+                "direct_definition_evidence_found": query_type == "definition" and "low_confidence_definition_guard" not in warning_codes,
+                "retrieval_grounding_sufficient": final_state.get("answer_ok", False),
+                "citation_filtered_count": filtered_count,
             }
         )
 
-        if route in ("calculator", "direct_answer"):
-            sources = None
-            confidence = 1.0 if route == "calculator" else None
-            warning = None
-        else:
-            sources = ChatService._extract_sources(final_state)
-            confidence = round(final_state.get("confidence", 0.5), 2)
-            warning = final_state.get("warning")
-
         return ChatResponse(
-            answer=final_state.get("answer", ""),
+            answer=answer,
             query_type=query_type,
             route=route,
             sources=sources,

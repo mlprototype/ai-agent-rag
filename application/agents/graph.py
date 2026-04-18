@@ -77,13 +77,14 @@ def _get_generate_chain():
         fallback_prompt = ChatPromptTemplate.from_messages([
             (
                 "system",
-                "あなたはユーザーを支援するAIアシスタントです。常に日本語で回答してください。"
-                "内部のルーティング、critic、sub-query、再試行については一切言及しないでください。"
-                "route が agentic_retrieval の場合は、与えられた検索コンテキストの範囲でのみ回答し、"
-                "根拠がある文には [1], [2] のような citation を付けてください。"
-                "route が direct_answer の場合は自然な会話として回答してください。"
+                "あなたはユーザーを支援するAIアシスタントです。常に日本語で回答してください。\n"
+                "内部のルーティング、critic、sub-query、再試行については一切言及しないでください。\n"
+                "route が agentic_retrieval の場合は、**必ず与えられた検索コンテキストの範囲でのみ**回答し、"
+                "コンテキストにない情報を一般知識で補足することは**固く禁止**します。\n"
+                "根拠がある文には [1], [2] のような citation を付けてください。\n"
+                "十分な情報が見つからない場合は、推測せず「検索結果に十分な情報が見つかりませんでした」と明確に述べてください。\n"
+                "route が direct_answer の場合は自然な会話として回答してください。\n"
                 "route が calculator の場合は計算結果を簡潔に述べてください。"
-                "十分な根拠が不足している場合は、その不足を明確に述べてください。"
             ),
             (
                 "system",
@@ -821,8 +822,10 @@ async def generate_node(state: AgentState) -> dict[str, Any]:
         }
     )
 
+    answer_text = response.content.strip()
+    
     updates: dict[str, Any] = {
-        "answer": response.content.strip(),
+        "answer": answer_text,
         "remaining_budget_ms_at_generate": remaining_at_start,
         **runtime_updates,
     }
@@ -835,17 +838,38 @@ async def generate_node(state: AgentState) -> dict[str, Any]:
         confidence = state.get("confidence", 0.98)
         updates["warning"] = _warning_for_state(confidence, not bool(state.get("warning")))
     else:
-        if not _SETTINGS.answer_critic_enabled:
-            provisional = AdvancedConfidenceEstimator.estimate(
-                critic_coverage=state.get("coverage_score", 0.0),
-                top_chunks=_chunk_dicts_to_models(state.get("working_chunks", [])),
-                answer_verdict=AnswerVerdict(verdict="PASS"),
-            )
-            final_confidence = _apply_confidence_cap(provisional, state)
-            updates["confidence"] = final_confidence
-            updates["answer_ok"] = True
-            updates["warning"] = _warning_for_state(final_confidence, True)
-            
+        working_chunks = state.get("working_chunks", [])
+        all_bm25_zero = len(working_chunks) == 0 or all(c.get("bm25_score", 0.0) == 0.0 for c in working_chunks)
+        retrieval_conf = state.get("confidence", 0.0)
+
+        fallback_lvl = state.get("fallback_level", "full_path")
+        is_minimal = fallback_lvl == "minimal_answer"
+        is_poor_definition = (all_bm25_zero and retrieval_conf < 0.6)
+        is_llm_fallback = "十分な情報が見つかりません" in answer_text or "十分な情報がない" in answer_text
+
+        if state.get("query_type") == "definition" and (is_minimal or is_poor_definition or is_llm_fallback):
+            updates["answer"] = "検索結果にこの用語を直接説明する十分な情報が見つかりませんでした。"
+            updates["confidence"] = 0.2
+            updates["warning"] = "Not enough information found in search results"
+            updates["answer_ok"] = False
+            warning_codes = state.get("warning_codes", [])
+            if "low_confidence_definition_guard" not in warning_codes:
+                updates["warning_codes"] = warning_codes + ["low_confidence_definition_guard"]
+
+            # 早期リターンのためのフラグ立てをして後続の_SETTINGS.answer_critic_enabled処理をスキップ
+            pass
+        else:
+            if not _SETTINGS.answer_critic_enabled:
+                provisional = AdvancedConfidenceEstimator.estimate(
+                    critic_coverage=state.get("coverage_score", 0.0),
+                    top_chunks=_chunk_dicts_to_models(state.get("working_chunks", [])),
+                    answer_verdict=AnswerVerdict(verdict="PASS"),
+                )
+                final_confidence = _apply_confidence_cap(provisional, state)
+                updates["confidence"] = final_confidence
+                updates["answer_ok"] = True
+                updates["warning"] = _warning_for_state(final_confidence, True)
+
         # Add warning messages for retrieval degradation
         fallback_level = state.get("fallback_level", "full_path")
         warning_codes = state.get("warning_codes", [])
@@ -1012,7 +1036,7 @@ def compare_merge_node(state: AgentState) -> dict[str, Any]:
     if state.get("parallel_results"):
         raw_results = state["parallel_results"][0]
         
-    packed_context, count_a, count_b, coverage_ok, fallback_reason = merge_compare_contexts(
+    packed_context, count_a, count_b, coverage_ok, fallback_reason, all_chunks, unique_sources = merge_compare_contexts(
         [t_a, t_b], raw_results
     )
     
@@ -1023,20 +1047,6 @@ def compare_merge_node(state: AgentState) -> dict[str, Any]:
         "compare_context_coverage_ok": coverage_ok,
         "compare_fallback_reason": fallback_reason
     })
-    
-    all_chunks = []
-    all_sources = []
-    for res in [raw_results.get(t_a, {}), raw_results.get(t_b, {})]:
-        all_chunks.extend(res.get("chunks", []))
-        all_sources.extend(res.get("sources", []))
-        
-    unique_sources = []
-    seen = set()
-    for s in all_sources:
-        u = s.get("url", "")
-        if u not in seen:
-            seen.add(u)
-            unique_sources.append(s)
 
     return {
         "retrieval_context": packed_context,
@@ -1072,6 +1082,7 @@ async def compare_generate_node(state: AgentState) -> dict[str, Any]:
             "1. 共通点\n2. 相違点\n3. 向いているケース（使い分けの指針）\n4. 注意点\n\n"
             "## 制約事項\n"
             "- 検索結果のコンテキストに含まれていない情報で回答を独自に補完しないでください。\n"
+            "- 根拠となるコンテキストがある場合は、その文末に [1], [2] のような citation（引用番号）を付けてください。\n"
             "- 片方の情報が著しく不足している場合は、該当箇所でその旨を明記して推測を避けてください。\n"
             "- 一方の技術や概念を過度に推奨せず、客観的な目線で回答してください。\n"
             "- 両者の文量をできるだけ揃え、片方だけ過度に長く説明しないでください。"
@@ -1146,6 +1157,8 @@ def route_after_retrieval_critic(state: AgentState) -> str:
 
 def route_after_generate(state: AgentState) -> str:
     if state["route"] != "agentic_retrieval" or not _SETTINGS.answer_critic_enabled:
+        return "commit_answer"
+    if "low_confidence_definition_guard" in state.get("warning_codes", []):
         return "commit_answer"
     return "answer_critic"
 

@@ -72,7 +72,7 @@ def get_settings() -> Settings:
         max_sub_queries=_get_int("MAX_SUB_QUERIES", 4),
         max_merged_chunks=_get_int("MAX_MERGED_CHUNKS", 20),
         router_timeout_seconds=_get_int("STAGE_TIMEOUT_MS_ROUTER", 1800) / 1000,
-        router_budget_ms=_get_int("ROUTER_BUDGET_MS", 500),
+        router_budget_ms=_get_int("ROUTER_BUDGET_MS", 1500),
         router_uncertain_confidence_cap=_get_int("ROUTER_UNCERTAIN_CONFIDENCE_CAP_PCT", 80) / 100,
         prompt_load_timeout_seconds=_get_int("PROMPT_LOAD_TIMEOUT_MS", 1200) / 1000,
         prompt_failure_ttl_seconds=_get_int("PROMPT_FAILURE_TTL_MS", 30000) / 1000,

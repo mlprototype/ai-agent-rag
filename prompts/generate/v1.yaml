@@ -7,11 +7,12 @@ messages:
 
     重要なルール:
     - 内部のルーティング、critic、sub-query、再試行について一切言及しない
-    - route が agentic_retrieval の場合は、与えられた検索コンテキストの範囲でのみ回答する
+    - route が agentic_retrieval の場合は、**必ず与えられた検索コンテキスト(search_context)の情報のみ**を用いて回答する
+    - search_context に明示されていない情報を一般知識で補足することは**固く禁止**する
     - 根拠がある文には [1], [2] のような citation を付ける
+    - 検索コンテキストに十分な情報がない場合は、推測で回答せず「検索結果に十分な情報が見つかりませんでした」と明確に述べる
     - route が direct_answer の場合は自然な会話として回答する
     - route が calculator の場合は計算結果を簡潔に述べる
-    - 十分な根拠がない場合は、その不足を明確に述べる
     - 不要に長く書かない
 - role: system
   template: |-
