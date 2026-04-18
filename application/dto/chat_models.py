@@ -24,9 +24,10 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     """
     チャットAPIの出力レスポンスモデル。
-    企業RAGの要件に基づき、answer + sources + confidence を返します。
     """
     answer: str = Field(description="エージェントによって生成された最終的な回答。")
-    sources: List[Source] = Field(default_factory=list, description="回答を生成するために使用されたソースのリスト。")
-    confidence: float = Field(default=0.0, description="回答の信頼度スコア（0.0〜1.0）。")
+    query_type: Optional[str] = Field(default=None, description="推論されたクエリのタイプ。")
+    route: Optional[str] = Field(default=None, description="実行されたルーティング経路。")
+    sources: Optional[List[Source]] = Field(default=None, description="回答を生成するために使用されたソースのリスト（RAG利用時のみ）。")
+    confidence: Optional[float] = Field(default=None, description="回答の信頼度スコア（0.0〜1.0）。計算などの場合は省略されるか1.0となります。")
     warning: Optional[str] = Field(default=None, description="回答に対する注意メッセージ。")

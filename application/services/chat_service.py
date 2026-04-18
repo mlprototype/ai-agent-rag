@@ -50,8 +50,9 @@ class ChatService:
         async for event in graph.astream(inputs, config=config, stream_mode="values"):
             final_state = event
 
-        sources = ChatService._extract_sources(final_state)
-        confidence = round(final_state.get("confidence", 0.5), 2)
+        query_type = final_state.get("query_type")
+        route = final_state.get("route")
+        
         total_latency_ms = int((time.monotonic() - started_at) * 1000)
         timeout_stages = list(final_state.get("timeout_stages", []))
         fallback_stages = list(final_state.get("fallback_stages", []))
@@ -67,13 +68,13 @@ class ChatService:
             {
                 "event": "chat_request_summary",
                 "session_id": request.session_id,
-                "query_type": final_state.get("query_type"),
-                "route": final_state.get("route"),
+                "query_type": query_type,
+                "route": route,
                 "total_latency_ms": total_latency_ms,
                 "router_timeout": "router" in timeout_stages,
                 "decompose_timeout": any(stage in {"decompose", "rewrite"} for stage in timeout_stages),
                 "critic_degraded": critic_degraded,
-                "final_confidence": confidence,
+                "final_confidence": round(final_state.get("confidence", 0.5), 2),
                 "timeout_stage": timeout_stages,
                 "fallback_used": bool(fallback_stages),
                 "fallback_level": final_state.get("fallback_level", "full_path"),
@@ -87,11 +88,22 @@ class ChatService:
             }
         )
 
+        if route in ("calculator", "direct_answer"):
+            sources = None
+            confidence = 1.0 if route == "calculator" else None
+            warning = None
+        else:
+            sources = ChatService._extract_sources(final_state)
+            confidence = round(final_state.get("confidence", 0.5), 2)
+            warning = final_state.get("warning")
+
         return ChatResponse(
             answer=final_state.get("answer", ""),
+            query_type=query_type,
+            route=route,
             sources=sources,
             confidence=confidence,
-            warning=final_state.get("warning"),
+            warning=warning,
         )
 
     @staticmethod

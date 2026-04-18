@@ -42,7 +42,7 @@ app.include_router(ingest_router, tags=["Ingestion"])
 def read_root():
     return {"message": "Agentic RAG API is running."}
 
-@app.post("/ask", response_model=ChatResponse)
+@app.post("/ask", response_model=ChatResponse, response_model_exclude_none=True)
 async def ask_agent(request: ChatRequest):
     """
     LangGraph Agentic RAGと通信するエンドポイント。

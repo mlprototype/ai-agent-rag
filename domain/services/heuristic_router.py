@@ -17,9 +17,9 @@ class RouteDecision(BaseModel):
 
 
 class HeuristicRouter:
-    _CALC_PATTERN = re.compile(r"^[\d\s\.\(\)\+\-\*/%]+(は|は？|です|ですか|はいくつ)?$")
+    _CALC_PATTERN = re.compile(r"^[\d\s\.\(\)\+\-\*/%]+\s*(=|＝)?\s*(は|は？|です|ですか|はいくつ|？|\?)?\s*$")
     _CALC_SYMBOL_PATTERN = re.compile(r"[\+\-\*/%]")
-    _CALC_JP_PATTERN = re.compile(r"^[\d\s\.]+(足す|たす|引く|ひく|かける|わる|割る|プラス|マイナス)[\d\s\.]+(は|は？|です|ですか|はいくつ)?$")
+    _CALC_JP_PATTERN = re.compile(r"^[\d\s\.]+(足す|たす|引く|ひく|かける|わる|割る|プラス|マイナス)[\d\s\.]+\s*(は|は？|です|ですか|はいくつ|？|\?|＝\?|=\?)?\s*$")
     
     _DIRECT_GREETINGS = [
         "こんにちは", "こんばんは", "おはよう", "ありがとう", "thank you", "thanks", "hello", "hi"
