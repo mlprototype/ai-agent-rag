@@ -46,6 +46,7 @@ __pypackages__/
 docs/
 
 .gemini/
+GEMINI.md
 
 _all_project_code.txt
 
