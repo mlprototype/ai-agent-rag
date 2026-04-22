@@ -1,3 +1,5 @@
+# ファイルの責務: 外部インターフェースから呼び出されるチャットのユースケース処理
+# 主な入出力: ChatRequestを受け取り、LangGraphを実行してChatResponseを返す
 import logging
 import time
 from typing import AsyncGenerator
@@ -133,11 +135,10 @@ class ChatService:
             warning=warning,
         )
 
+    # 関数の役割: エージェントが生成したテキストトークンのみをストリーミングする
+    # 入出力: ChatRequestを受け取り、文字列トークンのAsyncGeneratorを返す
     @staticmethod
     async def stream_question(request: ChatRequest) -> AsyncGenerator[str, None]:
-        """
-        エージェントワークフロー内のLLMによって生成されたテキストトークンのみをストリーミングします。
-        """
         if _SETTINGS.answer_critic_retry:
             response = await ChatService.ask_question(request)
             for index in range(0, len(response.answer), 24):

@@ -125,5 +125,5 @@ async def test_generate_emits_minimal_answer_warning(mock_get_chain):
     
     result = await generate_node(state)
     
-    assert result["warning"] == "十分な検索結果が得られず、最小限の回答を行いました。"
+    assert result["warning"] == "検索結果に十分な情報が見つかりませんでした。"
     assert result["retrieval_quality_level"] == "low"

@@ -51,6 +51,7 @@ class RetrievalService:
                 ensure_ascii=False
             )
         except asyncio.TimeoutError:
+            # 検索パイプライン全体がタイムアウトした場合、例外で落とさずに空結果とエラーメッセージを返してシステムを保護する
             logger.warning(f"パイプライン全体がタイムアウトしました: '{query}'")
             return json.dumps(
                 {"results": [], "message": "【Error】検索パイプラインがタイムアウトしました。"},
@@ -146,9 +147,10 @@ class RetrievalService:
             "top_k": top_k,
         }
 
+    # 関数の役割: 検索パイプライン全体の実行（内部API用）
+    # 入出力: クエリ文字列を受け取り、チャンクやコンテキストを含む辞書を返す
     @classmethod
     async def run(cls, query: str) -> dict:
-        """従来の 5 ステージをまとめて実行する。"""
         search_result = await cls.search(query)
         prepared = await cls.prepare_context(query, search_result.selected_chunks)
         return {

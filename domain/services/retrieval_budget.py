@@ -13,11 +13,10 @@ def compute_remaining_budget_ms(state: AgentState) -> int:
     elapsed_ms = int((time.monotonic() - float(started_at)) * 1000)
     return max(0, initial_budget_ms - elapsed_ms)
 
+# 関数の役割: チェックポイントでの残予算評価とフォールバックレベルの引き上げ
+# 入出力: AgentStateとチェックポイント名を受け取り、更新差分を返す
+# state更新: remaining_budget_ms, must_generate, fallback_level などを更新
 def evaluate_budget_and_fallback(state: AgentState, checkpoint: str) -> dict[str, Any]:
-    """
-    Evaluates remaining budget at a checkpoint and escalates fallback level if necessary.
-    Returns a dict of state updates.
-    """
     remaining = compute_remaining_budget_ms(state)
     usable_for_optional = remaining - _SETTINGS.budget_reserved_generate_ms - _SETTINGS.budget_reserved_commit_ms
     
@@ -33,6 +32,7 @@ def evaluate_budget_and_fallback(state: AgentState, checkpoint: str) -> dict[str
         updates["must_generate"] = True
         must_generate = True
         
+    # 回答生成のための必須時間を差し引いた利用可能時間が尽きた場合、品質向上処理をスキップするレベルへ引き上げる
     if usable_for_optional <= 0 and current_level in ["full_path", "optimization_skip"]:
         updates["fallback_level"] = "critic_skip"
         if f"usable_budget_exhausted_at_{checkpoint}" not in budget_reasons:

@@ -1,6 +1,3 @@
-# ファイルの責務: LangGraphによるエージェントのワークフロー定義と状態遷移制御
-# 主な入出力: 各ノードでAgentStateを受け取り、更新差分を返す
-# 設計上の注意点: タイムアウトや予算枯渇時には各段階でフォールバックを挟み、処理を継続する
 import asyncio
 import logging
 import re
@@ -43,9 +40,7 @@ from infrastructure.memory.in_memory_memory import in_memory_memory
 _SETTINGS = get_settings()
 _RERANKER = build_reranker()
 _GENERATE_CHAIN = None
-_DIRECT_CHAIN = None
 _CALC_PATTERN = re.compile(r"[\d\s\.\(\)\+\-\*/%]+")
-# タイムアウト閾値: これ未満の残予算では完了が見込めないためタイムアウトとして扱う
 _MIN_STAGE_TIMEOUT_MS = 250
 _HIGH_COMPLEXITY_HINTS = (
     "違い",
@@ -76,10 +71,6 @@ _DEFINITION_TYPE_HINTS = ("とは", "意味", "定義", "とは何", "って何"
 logger = logging.getLogger(__name__)
 
 
-# 関数の役割: 生成ノード用LLMチェーンの初期化と取得
-# 入出力: 引数なしで、LLMチェーンオブジェクトを返す
-# state更新: 更新なし
-# フォールバック: 特になし
 def _get_generate_chain():
     global _GENERATE_CHAIN
     if _GENERATE_CHAIN is None:
@@ -118,30 +109,6 @@ def _get_generate_chain():
     return _GENERATE_CHAIN
 
 
-# 関数の役割: 直接回答(direct_answer)ルート用LLMチェーンの初期化と取得
-# 入出力: 引数なしで、LLMチェーンオブジェクトを返す
-# state更新: 更新なし
-# フォールバック: 特になし
-def _get_direct_chain():
-    global _DIRECT_CHAIN
-    if _DIRECT_CHAIN is None:
-        prompt = ChatPromptTemplate.from_messages([
-            (
-                "system",
-                "あなたはユーザーを支援するAIアシスタントです。常に日本語で、自然な会話として回答してください。\n"
-                "内部のルーティング(direct_answerなど)やシステムについては一切言及しないでください。"
-            ),
-            MessagesPlaceholder("messages"),
-        ])
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, streaming=True)
-        _DIRECT_CHAIN = prompt | llm
-    return _DIRECT_CHAIN
-
-
-# 関数の役割: 履歴から最新のユーザー入力を取得
-# 入出力: AgentStateを受け取り、質問文字列を返す
-# state更新: 更新なし
-# フォールバック: メッセージがない場合は空文字を返す
 def _latest_user_query(state: AgentState) -> str:
     for message in reversed(state.get("messages", [])):
         if isinstance(message, HumanMessage):
@@ -149,10 +116,6 @@ def _latest_user_query(state: AgentState) -> str:
     return ""
 
 
-# 関数の役割: 質問の複雑度を推定
-# 入出力: 質問文字列を受け取り、複雑度(low/medium/high)を返す
-# state更新: 更新なし
-# フォールバック: 特になし
 def _estimate_query_complexity(query: str) -> str:
     normalized = query.strip().lower()
     if not normalized:
@@ -184,10 +147,6 @@ def _estimate_query_complexity(query: str) -> str:
     return "low"
 
 
-# 関数の役割: 質問の意図・種類を推論
-# 入出力: 質問とメタデータを受け取り、クエリ種別を返す
-# state更新: 更新なし
-# フォールバック: 判定不能時は retrieval_complex を返す
 def _infer_query_type(
     query: str,
     *,
@@ -207,10 +166,6 @@ def _infer_query_type(
     return "retrieval_complex"
 
 
-# 関数の役割: クエリ複雑度に応じた初期予算の算出
-# 入出力: 複雑度とクエリ種別を受け取り、予算(ms)を返す
-# state更新: 更新なし
-# フォールバック: 特になし
 def _initial_budget_ms(complexity: str, query_type: str) -> int:
     if query_type == "retrieval_complex":
         return _SETTINGS.budget_total_retrieval_complex_ms
@@ -221,18 +176,10 @@ def _initial_budget_ms(complexity: str, query_type: str) -> int:
     return _SETTINGS.complex_budget_low_ms
 
 
-# 関数の役割: 残り予算時間の取得
-# 入出力: AgentStateを受け取り、残り予算(ms)を返す
-# state更新: 更新なし
-# フォールバック: 特になし
 def _remaining_budget_ms(state: AgentState) -> int:
     return compute_remaining_budget_ms(state)
 
 
-# 関数の役割: 各ノード実行時の予算関連ステート更新の生成
-# 入出力: AgentState等を受け取り、更新差分を返す
-# state更新: remaining_budget_ms, must_generate などを更新
-# フォールバック: 特になし
 def _budget_runtime_updates(
     state: AgentState,
     *,
@@ -261,10 +208,6 @@ def _budget_runtime_updates(
     return updates
 
 
-# 関数の役割: タイムアウト等のステージリストへの追加
-# 入出力: リストと追加要素を受け取り、新規リストを返す
-# state更新: 更新なし
-# フォールバック: 特になし
 def _append_stage(items: list[str] | None, stage: str) -> list[str]:
     existing = list(items or [])
     if stage not in existing:
@@ -272,10 +215,6 @@ def _append_stage(items: list[str] | None, stage: str) -> list[str]:
     return existing
 
 
-# 関数の役割: 現在のステージで利用可能なタイムアウト秒数の算出
-# 入出力: AgentState等を受け取り、タイムアウト秒を返す
-# state更新: 更新なし
-# フォールバック: 予算不足時は即時タイムアウト(0.0)を返す
 def _stage_timeout_seconds(
     state: AgentState,
     hard_timeout_seconds: float,
@@ -292,10 +231,6 @@ def _stage_timeout_seconds(
     return allowed_ms / 1000
 
 
-# 関数の役割: 検索品質評価をスキップすべきかの判定
-# 入出力: AgentStateを受け取り、スキップ理由(str)またはNoneを返す
-# state更新: 更新なし
-# フォールバック: 予算不足等の場合はスキップ理由を返す
 def _should_skip_retrieval_critic(state: AgentState) -> str | None:
     if state.get("coverage_intent") == "compare":
         return None
@@ -314,10 +249,6 @@ def _should_skip_retrieval_critic(state: AgentState) -> str | None:
     return None
 
 
-# 関数の役割: 回答品質評価をスキップすべきかの判定
-# 入出力: AgentStateを受け取り、スキップ理由(str)またはNoneを返す
-# state更新: 更新なし
-# フォールバック: 予算不足や必須観点不足時はスキップ理由を返す
 def _should_skip_answer_critic(state: AgentState) -> str | None:
     if state.get("missing_aspects"):
         return None
@@ -338,26 +269,14 @@ def _should_skip_answer_critic(state: AgentState) -> str | None:
     return None
 
 
-# 関数の役割: 辞書リストからチャンクモデルリストへの変換
-# 入出力: 辞書リストを受け取り、RetrievedChunkリストを返す
-# state更新: 更新なし
-# フォールバック: 特になし
 def _chunk_dicts_to_models(chunk_dicts: list[dict[str, Any]]) -> list[RetrievedChunk]:
     return [RetrievedChunk.from_state_dict(chunk) for chunk in chunk_dicts]
 
 
-# 関数の役割: チャンクモデルリストから辞書リストへの変換
-# 入出力: RetrievedChunkリストを受け取り、辞書リストを返す
-# state更新: 更新なし
-# フォールバック: 特になし
 def _chunk_models_to_dicts(chunks: list[RetrievedChunk]) -> list[dict[str, Any]]:
     return [chunk.to_state_dict() for chunk in chunks]
 
 
-# 関数の役割: 検索結果チャンク群のLLM評価用サマリー生成
-# 入出力: チャンク辞書リストを受け取り、要約文字列を返す
-# state更新: 更新なし
-# フォールバック: 特になし
 def _chunks_summary(chunk_dicts: list[dict[str, Any]]) -> str:
     lines = []
     for index, chunk in enumerate(chunk_dicts[:8], start=1):
@@ -370,10 +289,6 @@ def _chunks_summary(chunk_dicts: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-# 関数の役割: 引用ソース情報とコンテキストの統合サマリー生成
-# 入出力: ソース辞書リストとコンテキストを受け取り、文字列を返す
-# state更新: 更新なし
-# フォールバック: 特になし
 def _sources_summary(sources: list[dict[str, Any]], retrieval_context: str) -> str:
     lines = []
     for source in sources:
@@ -388,10 +303,6 @@ def _sources_summary(sources: list[dict[str, Any]], retrieval_context: str) -> s
     return "\n".join(lines)
 
 
-# 関数の役割: 生成ノード向けの参照用ソースカタログ生成
-# 入出力: ソース辞書リストを受け取り、文字列を返す
-# state更新: 更新なし
-# フォールバック: ソースが無い場合は「なし」を返す
 def _sources_catalog(sources: list[dict[str, Any]]) -> str:
     if not sources:
         return "なし"
@@ -401,10 +312,6 @@ def _sources_catalog(sources: list[dict[str, Any]]) -> str:
     )
 
 
-# 関数の役割: システム状態に基づく確信度(Confidence)の上限適用
-# 入出力: 確信度とState等を受け取り、補正後の確信度を返す
-# state更新: 更新なし
-# フォールバック: 上限値を超える場合はクリッピングする
 def _apply_confidence_cap(confidence: float, state: AgentState, answer_verdict: AnswerVerdict | None = None) -> float:
     capped = confidence
     if answer_verdict and answer_verdict.confidence_override is not None:
@@ -417,20 +324,12 @@ def _apply_confidence_cap(confidence: float, state: AgentState, answer_verdict: 
     return round(max(0.0, min(1.0, capped)), 2)
 
 
-# 関数の役割: 状態に基づく基本警告メッセージの生成
-# 入出力: 確信度と回答OKフラグを受け取り、警告文字列を返す
-# state更新: 更新なし
-# フォールバック: 低品質時は不完全な回答である旨の警告を返す
 def _warning_for_state(confidence: float, answer_ok: bool) -> str | None:
     if not answer_ok or confidence < 0.5:
         return "This answer may be incomplete"
     return None
 
 
-# 関数の役割: ユーザー提示用の詳細な警告メッセージ構築
-# 入出力: 警告コードや品質レベル等を受け取り、警告文字列を返す
-# state更新: 更新なし
-# フォールバック: 品質低下が検知された場合に適切な警告を返す
 def build_user_warning(
     warning_codes: list[str],
     fallback_level: str,
@@ -447,10 +346,6 @@ def build_user_warning(
     return None
 
 
-# 関数の役割: 現在の検索状態に対するカバレッジ(網羅性)評価
-# 入出力: AgentStateと対象フラグを受け取り、評価結果を返す
-# state更新: 更新なし
-# フォールバック: 特になし
 def _coverage_assessment_for_state(state: AgentState, *, use_sources: bool) -> Any:
     coverage_plan = build_coverage_plan(state.get("original_query", ""))
     if use_sources:
@@ -460,27 +355,15 @@ def _coverage_assessment_for_state(state: AgentState, *, use_sources: bool) -> A
     return assess_coverage(coverage_plan, text)
 
 
-# 関数の役割: ルーター実行のタイムアウト秒数算出
-# 入出力: 引数なしで、秒数(float)を返す
-# state更新: 更新なし
-# フォールバック: 設定と予算のうち短い方を採用
 def _router_timeout_seconds() -> float:
     return min(_SETTINGS.router_timeout_seconds, _SETTINGS.router_budget_ms / 1000)
 
 
-# 関数の役割: 質問文字列からの数式抽出
-# 入出力: 質問文字列を受け取り、数式文字列を返す
-# state更新: 更新なし
-# フォールバック: 抽出不能時は元のクエリをそのまま返す
 def _extract_expression(query: str) -> str:
     candidate = "".join(_CALC_PATTERN.findall(query)).strip()
     return candidate or query.strip()
 
 
-# 関数の役割: ワークフロー初期化
-# 入出力: AgentStateを受け取り、更新差分を返す
-# state更新: original_query, initial_budget_ms などを設定
-# フォールバック: 特になし
 async def initialize_node(state: AgentState) -> dict[str, Any]:
     original_query = _latest_user_query(state)
     coverage_plan = build_coverage_plan(original_query)
@@ -565,10 +448,6 @@ async def initialize_node(state: AgentState) -> dict[str, Any]:
     }
 
 
-# 関数の役割: 意図に基づく初期ルーティング
-# 入出力: AgentStateを受け取り、更新差分を返す
-# state更新: route, router_reason などを更新
-# フォールバック: LLMのタイムアウト時は検索ルートへ遷移
 async def router_node(state: AgentState) -> dict[str, Any]:
     timeout_seconds = _router_timeout_seconds()
     started_at = time.monotonic()
@@ -611,10 +490,6 @@ async def router_node(state: AgentState) -> dict[str, Any]:
     }
 
 
-# 関数の役割: 数式計算の実行
-# 入出力: AgentStateを受け取り、更新差分を返す
-# state更新: calculator_result, confidence などを更新
-# フォールバック: 計算エラー時は低い確信度を設定
 async def calculator_node(state: AgentState) -> dict[str, Any]:
     expression = _extract_expression(state["original_query"])
     try:
@@ -640,10 +515,6 @@ async def calculator_node(state: AgentState) -> dict[str, Any]:
         }
 
 
-# 関数の役割: 単一クエリによる検索の実行
-# 入出力: AgentStateを受け取り、更新差分を返す
-# state更新: working_chunks, retrieval_context などを更新
-# フォールバック: 特になし
 async def retrieve_node(state: AgentState) -> dict[str, Any]:
     result = await RetrievalService.run(state["original_query"])
     return {
@@ -659,10 +530,6 @@ async def retrieve_node(state: AgentState) -> dict[str, Any]:
     }
 
 
-# 関数の役割: 検索結果の品質評価
-# 入出力: AgentStateを受け取り、更新差分を返す
-# state更新: retrieval_ok, critique_reason などを更新
-# フォールバック: 予算不足・高スコア時はLLM評価をスキップ
 async def retrieval_critic_node(state: AgentState) -> dict[str, Any]:
     runtime_state = state | _budget_runtime_updates(state)
     skip_reason = _should_skip_retrieval_critic(runtime_state)
@@ -724,10 +591,6 @@ async def retrieval_critic_node(state: AgentState) -> dict[str, Any]:
     return updates | _budget_runtime_updates(state)
 
 
-# 関数の役割: 複雑な質問のサブクエリへの分解
-# 入出力: AgentStateを受け取り、更新差分を返す
-# state更新: sub_queries, query_phase などを更新
-# フォールバック: タイムアウト時は元のクエリのまま単一検索へ遷移
 async def decompose_node(state: AgentState) -> dict[str, Any]:
     runtime_updates = _budget_runtime_updates(state, checkpoint="after_decompose")
     timeout_seconds = _stage_timeout_seconds(state, _SETTINGS.decompose_timeout_seconds, reserve_generate=True)
@@ -775,10 +638,6 @@ async def decompose_node(state: AgentState) -> dict[str, Any]:
     }
 
 
-# 関数の役割: 評価不足観点を補うためのクエリ書き換え
-# 入出力: AgentStateを受け取り、更新差分を返す
-# state更新: sub_queries, retry_count などを更新
-# フォールバック: タイムアウト時は現状のクエリで単一検索へ遷移
 async def rewrite_node(state: AgentState) -> dict[str, Any]:
     timeout_seconds = _stage_timeout_seconds(state, _SETTINGS.rewrite_timeout_seconds, reserve_generate=True)
     if timeout_seconds <= 0:
@@ -813,10 +672,6 @@ async def rewrite_node(state: AgentState) -> dict[str, Any]:
     }
 
 
-# 関数の役割: サブクエリを用いた並列検索
-# 入出力: AgentStateを受け取り、更新差分を返す
-# state更新: parallel_results, warning_codes などを更新
-# フォールバック: 予算不足時は単一検索へ遷移
 async def parallel_retrieve_node(state: AgentState) -> dict[str, Any]:
     runtime_updates = _budget_runtime_updates(state, checkpoint="before_parallel_retrieve")
     temp_state = dict(state)
@@ -830,7 +685,6 @@ async def parallel_retrieve_node(state: AgentState) -> dict[str, Any]:
     remaining = compute_remaining_budget_ms(temp_state) # type: ignore
     usable_for_retrieval = remaining - _SETTINGS.budget_reserved_generate_ms - _SETTINGS.budget_reserved_commit_ms
     
-    # 複数検索を行う予算(2000ms)がない場合、元のクエリのみの単一検索へフォールバックする
     if usable_for_retrieval < 2000 and fallback_level not in ["single_retrieval_fallback", "minimal_answer"]:
         sub_queries = [state["original_query"]]
         fallback_level = "single_retrieval_fallback"
@@ -892,10 +746,6 @@ async def parallel_retrieve_node(state: AgentState) -> dict[str, Any]:
     }
 
 
-# 関数の役割: 並列検索結果の統合と重複排除
-# 入出力: AgentStateを受け取り、更新差分を返す
-# state更新: working_chunks などを更新
-# フォールバック: 検索結果が空の場合は最小限の回答へ遷移
 async def merge_node(state: AgentState) -> dict[str, Any]:
     warning_codes = list(state.get("warning_codes", []))
     fallback_level = state.get("fallback_level", "full_path")
@@ -926,10 +776,6 @@ async def merge_node(state: AgentState) -> dict[str, Any]:
     }
 
 
-# 関数の役割: 統合チャンクの再スコアリング
-# 入出力: AgentStateを受け取り、更新差分を返す
-# state更新: working_chunks, retrieval_context などを更新
-# フォールバック: 予算不足時はリランクをスキップ
 async def rerank_node(state: AgentState) -> dict[str, Any]:
     chunks = _chunk_dicts_to_models(state.get("working_chunks", []))
     if not chunks:
@@ -964,10 +810,6 @@ async def rerank_node(state: AgentState) -> dict[str, Any]:
     }
 
 
-# 関数の役割: コンテキストに基づく最終回答の生成
-# 入出力: AgentStateを受け取り、更新差分を返す
-# state更新: answer, confidence などを更新
-# フォールバック: 情報不足時は推測を避けてブロック
 async def generate_node(state: AgentState) -> dict[str, Any]:
     runtime_updates = _budget_runtime_updates(state, checkpoint="before_generate")
     chain = _get_generate_chain()
@@ -985,7 +827,6 @@ async def generate_node(state: AgentState) -> dict[str, Any]:
     # Strict RAG Safety Net: 内部的な grounding 不足（コンテキストまたはチャンクの欠如）を基準に判定
     is_retrieval_route = state["route"] in ("agentic_retrieval", "fallback_retrieval")
     # 検索系において、コンテキストが空、またはチャンクが空、または検索成功回数が0の場合を grounding 不足とみなす
-    # 検索コンテキストが存在しない状態で推測による回答生成を行うのを避けるためのブロック処理
     is_grounding_insufficient = is_retrieval_route and (
         not state.get("retrieval_context") or 
         not state.get("working_chunks") or 
@@ -1017,125 +858,77 @@ async def generate_node(state: AgentState) -> dict[str, Any]:
         **runtime_updates,
     }
 
-    working_chunks = state.get("working_chunks", [])
-    all_bm25_zero = len(working_chunks) == 0 or all(c.get("bm25_score", 0.0) == 0.0 for c in working_chunks)
-    retrieval_conf = state.get("confidence", 0.0)
+    if state["route"] == "direct_answer":
+        confidence = 0.8
+        updates["confidence"] = confidence
+        updates["warning"] = _warning_for_state(confidence, True)
+    elif state["route"] == "calculator":
+        confidence = state.get("confidence", 0.98)
+        updates["warning"] = _warning_for_state(confidence, not bool(state.get("warning")))
+    else:
+        working_chunks = state.get("working_chunks", [])
+        all_bm25_zero = len(working_chunks) == 0 or all(c.get("bm25_score", 0.0) == 0.0 for c in working_chunks)
+        retrieval_conf = state.get("confidence", 0.0)
 
-    fallback_lvl = state.get("fallback_level", "full_path")
-    is_minimal = fallback_lvl == "minimal_answer"
-    is_poor_definition = (all_bm25_zero and retrieval_conf < 0.6)
-    is_llm_fallback = "十分な情報が見つかりません" in answer_text or "十分な情報がない" in answer_text
+        fallback_lvl = state.get("fallback_level", "full_path")
+        is_minimal = fallback_lvl == "minimal_answer"
+        is_poor_definition = (all_bm25_zero and retrieval_conf < 0.6)
+        is_llm_fallback = "十分な情報が見つかりません" in answer_text or "十分な情報がない" in answer_text
 
-    if strict_insufficient_response or is_llm_fallback:
-        updates["confidence"] = 0.25  # definition fail-safe(0.2)に近い値で一貫性を持たせる
-        updates["answer_ok"] = False
-        updates["warning"] = "検索結果に十分な情報が見つかりませんでした。"
-    elif state.get("query_type") == "definition" and (is_minimal or is_poor_definition):
-        updates["answer"] = "検索結果にこの用語を直接説明する十分な情報が見つかりませんでした。"
-        updates["confidence"] = 0.2
-        updates["warning"] = "Not enough information found in search results"
-        updates["answer_ok"] = False
+        if strict_insufficient_response or is_llm_fallback:
+            updates["confidence"] = 0.25  # definition fail-safe(0.2)に近い値で一貫性を持たせる
+            updates["answer_ok"] = False
+            updates["warning"] = "検索結果に十分な情報が見つかりませんでした。"
+        elif state.get("query_type") == "definition" and (is_minimal or is_poor_definition):
+            updates["answer"] = "検索結果にこの用語を直接説明する十分な情報が見つかりませんでした。"
+            updates["confidence"] = 0.2
+            updates["warning"] = "Not enough information found in search results"
+            updates["answer_ok"] = False
+            warning_codes = state.get("warning_codes", [])
+            if "low_confidence_definition_guard" not in warning_codes:
+                updates["warning_codes"] = warning_codes + ["low_confidence_definition_guard"]
+
+            # 早期リターンのためのフラグ立てをして後続の_SETTINGS.answer_critic_enabled処理をスキップ
+            pass
+        else:
+            if not _SETTINGS.answer_critic_enabled:
+                provisional = AdvancedConfidenceEstimator.estimate(
+                    critic_coverage=state.get("coverage_score", 0.0),
+                    top_chunks=_chunk_dicts_to_models(state.get("working_chunks", [])),
+                    answer_verdict=AnswerVerdict(verdict="PASS"),
+                )
+                final_confidence = _apply_confidence_cap(provisional, state)
+                updates["confidence"] = final_confidence
+                updates["answer_ok"] = True
+                updates["warning"] = _warning_for_state(final_confidence, True)
+
+        # Add warning messages for retrieval degradation
+        fallback_level = state.get("fallback_level", "full_path")
         warning_codes = state.get("warning_codes", [])
-        if "low_confidence_definition_guard" not in warning_codes:
-            updates["warning_codes"] = warning_codes + ["low_confidence_definition_guard"]
+        partial_retrieval_used = state.get("partial_retrieval_used", False) or "partial_retrieval_used" in warning_codes
+        
+        # Determine retrieval quality level
+        if fallback_level == "minimal_answer":
+            retrieval_quality_level = "low"
+        elif partial_retrieval_used or fallback_level in ["single_retrieval_fallback", "critic_skip", "optimization_skip"]:
+            retrieval_quality_level = "medium"
+        else:
+            retrieval_quality_level = "high"
+        
+        updates["retrieval_quality_level"] = retrieval_quality_level
 
-        # 早期リターンのためのフラグ立てをして後続の_SETTINGS.answer_critic_enabled処理をスキップ
-        pass
-    else:
-        if not _SETTINGS.answer_critic_enabled:
-            provisional = AdvancedConfidenceEstimator.estimate(
-                critic_coverage=state.get("coverage_score", 0.0),
-                top_chunks=_chunk_dicts_to_models(state.get("working_chunks", [])),
-                answer_verdict=AnswerVerdict(verdict="PASS"),
-            )
-            final_confidence = _apply_confidence_cap(provisional, state)
-            updates["confidence"] = final_confidence
-            updates["answer_ok"] = True
-            updates["warning"] = _warning_for_state(final_confidence, True)
-
-    # Add warning messages for retrieval degradation
-    fallback_level = state.get("fallback_level", "full_path")
-    warning_codes = state.get("warning_codes", [])
-    partial_retrieval_used = state.get("partial_retrieval_used", False) or "partial_retrieval_used" in warning_codes
-    
-    # Determine retrieval quality level
-    if fallback_level == "minimal_answer":
-        retrieval_quality_level = "low"
-    elif partial_retrieval_used or fallback_level in ["single_retrieval_fallback", "critic_skip", "optimization_skip"]:
-        retrieval_quality_level = "medium"
-    else:
-        retrieval_quality_level = "high"
-    
-    updates["retrieval_quality_level"] = retrieval_quality_level
-
-    user_warning = build_user_warning(
-        warning_codes=warning_codes,
-        fallback_level=fallback_level,
-        partial_retrieval_used=partial_retrieval_used,
-        retrieval_quality_level=retrieval_quality_level,
-    )
-    if user_warning and not updates.get("warning"):
-        updates["warning"] = user_warning
+        user_warning = build_user_warning(
+            warning_codes=warning_codes,
+            fallback_level=fallback_level,
+            partial_retrieval_used=partial_retrieval_used,
+            retrieval_quality_level=retrieval_quality_level,
+        )
+        if user_warning and not updates.get("warning"):
+            updates["warning"] = user_warning
 
     return updates
 
 
-# 関数の役割: 検索不要な直接回答ルート向けの回答生成
-# 入出力: AgentStateを受け取り、更新差分を返す
-# state更新: answer, confidence などを更新
-# フォールバック: 特になし
-async def direct_generate_node(state: AgentState) -> dict[str, Any]:
-    runtime_updates = _budget_runtime_updates(state, checkpoint="before_generate")
-    chain = _get_direct_chain()
-    
-    logger.info(f"Generating direct answer: route={state['route']}")
-    response = await chain.ainvoke({
-        "messages": list(state.get("messages", []))
-    })
-    
-    return {
-        "answer": response.content.strip(),
-        "confidence": 0.8,
-        "answer_ok": True,
-        "warning": None,
-        "missing_aspects": [],
-        "answer_critic_skipped_reason": None,
-        **runtime_updates,
-    }
-
-
-# 関数の役割: 計算ルート向けの回答フォーマット生成
-# 入出力: AgentStateを受け取り、更新差分を返す
-# state更新: answer などを更新
-# フォールバック: 特になし
-async def calc_generate_node(state: AgentState) -> dict[str, Any]:
-    runtime_updates = _budget_runtime_updates(state, checkpoint="before_generate")
-    result = state.get("calculator_result")
-    
-    if not result:
-        answer = "計算を実行できませんでした。"
-        answer_ok = False
-        confidence = 0.4
-    else:
-        answer = f"計算結果は {result} です。"
-        answer_ok = True
-        confidence = state.get("confidence", 0.98)
-        
-    return {
-        "answer": answer,
-        "confidence": confidence,
-        "answer_ok": answer_ok,
-        "warning": None if answer_ok else "This answer may be incomplete",
-        "missing_aspects": [],
-        "answer_critic_skipped_reason": None,
-        **runtime_updates,
-    }
-
-
-# 関数の役割: 生成回答のソース忠実性評価
-# 入出力: AgentStateを受け取り、更新差分を返す
-# state更新: answer_ok, confidence などを更新
-# フォールバック: 予算不足時はLLM評価をスキップ
 async def answer_critic_node(state: AgentState) -> dict[str, Any]:
     skip_reason = _should_skip_answer_critic(state | _budget_runtime_updates(state))
     if skip_reason is not None:
@@ -1203,10 +996,6 @@ async def answer_critic_node(state: AgentState) -> dict[str, Any]:
     }
 
 
-# 関数の役割: 比較意図からの対象エンティティ抽出
-# 入出力: AgentStateを受け取り、更新差分を返す
-# state更新: compare_targets, compare_extract_success などを更新
-# フォールバック: 抽出失敗時はフラグを設定
 def compare_extract_node(state: AgentState) -> dict[str, Any]:
     query = state.get("original_query", "")
     targets = extract_targets(query)
@@ -1239,10 +1028,6 @@ def compare_extract_node(state: AgentState) -> dict[str, Any]:
     }
 
 
-# 関数の役割: 比較抽出成否によるルーティング
-# 入出力: AgentStateを受け取り、次ノード名を返す
-# state更新: (ルーティング関数につき更新なし)
-# フォールバック: 抽出失敗時は通常検索ルートへ遷移
 def route_after_compare_extract(state: AgentState) -> str:
     if state.get("compare_extract_success"):
         return "compare_retrieve"
@@ -1251,10 +1036,6 @@ def route_after_compare_extract(state: AgentState) -> str:
     return "retrieve"
 
 
-# 関数の役割: 比較対象ごとの並列検索の実行
-# 入出力: AgentStateを受け取り、更新差分を返す
-# state更新: parallel_results などを更新
-# フォールバック: 特になし
 async def compare_retrieve_node(state: AgentState) -> dict[str, Any]:
     targets_dict = state.get("compare_targets", {})
     t_a = targets_dict.get("target_a")
@@ -1278,10 +1059,6 @@ async def compare_retrieve_node(state: AgentState) -> dict[str, Any]:
     }
 
 
-# 関数の役割: 比較結果の結合とカバレッジ評価
-# 入出力: AgentStateを受け取り、更新差分を返す
-# state更新: retrieval_context, compare_context_coverage_ok などを更新
-# フォールバック: カバー不足時はフラグを設定
 def compare_merge_node(state: AgentState) -> dict[str, Any]:
     targets_dict = state.get("compare_targets", {})
     t_a = targets_dict.get("target_a")
@@ -1316,10 +1093,6 @@ def compare_merge_node(state: AgentState) -> dict[str, Any]:
     }
 
 
-# 関数の役割: 比較コンテキスト充足度によるルーティング
-# 入出力: AgentStateを受け取り、次ノード名を返す
-# state更新: (ルーティング関数につき更新なし)
-# フォールバック: 網羅不足時は汎用検索へ遷移
 def route_after_compare_merge(state: AgentState) -> str:
     if state.get("compare_context_coverage_ok"):
         return "compare_generate"
@@ -1329,10 +1102,6 @@ def route_after_compare_merge(state: AgentState) -> str:
     return "retrieve"
 
 
-# 関数の役割: 構造化要件に基づく比較回答の生成
-# 入出力: AgentStateを受け取り、更新差分を返す
-# state更新: answer, answer_ok などを更新
-# フォールバック: 特になし
 async def compare_generate_node(state: AgentState) -> dict[str, Any]:
     _compare_fallback_prompt = ChatPromptTemplate.from_messages([
         (
@@ -1384,23 +1153,15 @@ async def compare_generate_node(state: AgentState) -> dict[str, Any]:
         **_budget_runtime_updates(state)
     }
 
-# 関数の役割: 最終回答をメッセージ履歴へコミット
-# 入出力: AgentStateを受け取り、更新差分を返す
-# state更新: messages などを更新
-# フォールバック: 特になし
 async def commit_answer_node(state: AgentState) -> dict[str, Any]:
     return {"messages": [AIMessage(content=state.get("answer", ""))]}
 
 
-# 関数の役割: ルーター判定後のルート分岐
-# 入出力: AgentStateを受け取り、次ノード名を返す
-# state更新: (ルーティング関数につき更新なし)
-# フォールバック: フォールバックルート判定時は1回検索へ遷移
 def route_after_router(state: AgentState) -> str:
     if state["route"] == "calculator":
         return "calculator"
     if state["route"] == "direct_answer":
-        return "direct_generate"
+        return "generate"
         
     query_type = state.get("query_type", "")
     if query_type == "compare":
@@ -1411,10 +1172,6 @@ def route_after_router(state: AgentState) -> str:
     return "retrieve"
 
 
-# 関数の役割: 評価結果後のルーティング判定
-# 入出力: AgentStateを受け取り、次ノード名を返す
-# state更新: (ルーティング関数につき更新なし)
-# フォールバック: 予算不足時は再検索せず生成へ進む
 def route_after_retrieval_critic(state: AgentState) -> str:
     if state.get("force_generate") or state.get("must_generate"):
         return "generate"
@@ -1430,10 +1187,6 @@ def route_after_retrieval_critic(state: AgentState) -> str:
     return "rewrite"
 
 
-# 関数の役割: 生成後の評価分岐
-# 入出力: AgentStateを受け取り、次ノード名を返す
-# state更新: (ルーティング関数につき更新なし)
-# フォールバック: 予算不足や設定により評価をスキップ
 def route_after_generate(state: AgentState) -> str:
     route = state.get("route", "direct_answer")
     if not _SETTINGS.answer_critic_enabled:
@@ -1460,10 +1213,6 @@ def route_after_generate(state: AgentState) -> str:
     return "answer_critic"
 
 
-# 関数の役割: 回答評価後の再検索判定
-# 入出力: AgentStateを受け取り、次ノード名を返す
-# state更新: (ルーティング関数につき更新なし)
-# フォールバック: 予算不足や上限到達時はそのまま完了
 def route_after_answer_critic(state: AgentState) -> str:
     if state.get("answer_ok"):
         return "commit_answer"
@@ -1493,8 +1242,6 @@ builder.add_node("rerank", rerank_node)
 builder.add_node("generate", generate_node)
 builder.add_node("answer_critic", answer_critic_node)
 builder.add_node("commit_answer", commit_answer_node)
-builder.add_node("direct_generate", direct_generate_node)
-builder.add_node("calc_generate", calc_generate_node)
 builder.add_node("compare_extract", compare_extract_node)
 builder.add_node("compare_retrieve", compare_retrieve_node)
 builder.add_node("compare_merge", compare_merge_node)
@@ -1507,7 +1254,6 @@ builder.add_conditional_edges(
     route_after_router,
     {
         "calculator": "calculator",
-        "direct_generate": "direct_generate",
         "generate": "generate",
         "compare_extract": "compare_extract",
         "retrieve": "retrieve",
@@ -1535,9 +1281,7 @@ builder.add_conditional_edges(
 )
 builder.add_edge("compare_generate", "commit_answer")
 
-builder.add_edge("calculator", "calc_generate")
-builder.add_edge("direct_generate", "commit_answer")
-builder.add_edge("calc_generate", "commit_answer")
+builder.add_edge("calculator", "generate")
 builder.add_edge("retrieve", "retrieval_critic")
 builder.add_edge("retrieve_once", "generate")
 builder.add_conditional_edges(
@@ -1573,3 +1317,4 @@ builder.add_conditional_edges(
 builder.add_edge("commit_answer", END)
 
 graph = builder.compile(checkpointer=in_memory_memory.get_checkpointer())
+

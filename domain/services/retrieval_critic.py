@@ -65,6 +65,9 @@ class RetrievalCritic:
             cls._chain = prompt | llm
         return cls._chain
 
+    # 関数の役割: 検索結果の回答十分性の評価
+    # 入出力: 質問、検索結果サマリーを受け取り、評価結果(CritiqueResult)を返す
+    # フォールバック: LLMエラー時はルールベースのカバレッジスコアで暫定評価を行う
     @classmethod
     async def critique(
         cls,
@@ -114,6 +117,7 @@ class RetrievalCritic:
                 result.coverage_score = max(llm_score, coverage.coverage_score)
             return result
         except Exception as exc:
+            # Critic自体がエラーになった場合でも、ルールベースのカバレッジスコアで暫定評価を行いパイプラインを継続する
             error_reason = classify_prompt_error(exc)
             fallback_verdict = "INSUFFICIENT" if coverage.missing_aspects or coverage.coverage_score < 0.75 else "SUFFICIENT"
             fallback_score = min(coverage.coverage_score, 0.49) if fallback_verdict == "INSUFFICIENT" else min(coverage.coverage_score, 0.7)

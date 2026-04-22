@@ -1,3 +1,5 @@
+# ファイルの責務: 生成された回答が検索結果に裏付けられているか（ハルシネーションの有無）の検証
+# 主な入出力: 質問、回答、引用ソースを受け取り、判定結果(AnswerVerdict)を返す
 import asyncio
 import logging
 from typing import Literal
@@ -74,6 +76,9 @@ class AnswerCritic:
             cls._chain = prompt | llm
         return cls._chain
 
+    # 関数の役割: 回答のソースへの忠実性・ハルシネーション検証
+    # 入出力: 質問、回答、引用ソースを受け取り、評価結果(AnswerVerdict)を返す
+    # フォールバック: LLMエラー時はルールベースの必須観点不足有無で判定を行う
     @classmethod
     async def verify(
         cls,

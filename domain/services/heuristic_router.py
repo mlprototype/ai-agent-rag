@@ -1,3 +1,6 @@
+# ファイルの責務: 正規表現やキーワードマッチによる高速なルーティング判定
+# 主な入出力: 質問文字列を受け取り、合致した場合はRouteDecisionを返す
+# 設計上の注意点: LLM APIの呼び出しコストと遅延を削減するため、明確なパターンの場合のみルートを決定する
 import re
 from typing import Literal
 from pydantic import BaseModel
