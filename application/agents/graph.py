@@ -26,6 +26,8 @@ from domain.services.result_merger import ResultMerger
 from domain.services.retrieval_critic import RetrievalCritic
 from domain.services.retrieval_service import RetrievalService
 from domain.services.router import AgentRouter
+from domain.services.structured_query import StructuredQueryTool
+from pydantic import BaseModel
 from domain.services.compare_intent import extract_targets
 from domain.services.compare_retrieval import build_compare_subquery, run_compare_retrieval
 from domain.services.compare_merge import merge_compare_contexts
@@ -1132,6 +1134,30 @@ async def calc_generate_node(state: AgentState) -> dict[str, Any]:
     }
 
 
+# 関数の役割: 構造化クエリルート向けの回答生成
+# 入出力: AgentStateを受け取り、更新差分を返す
+# state更新: answer, confidence, sources などを更新
+# フェールセーフ: 抽出失敗時なども安全に代替テキストが answer に入る設計
+async def structured_query_node(state: AgentState) -> dict[str, Any]:
+    runtime_updates = _budget_runtime_updates(state, checkpoint="before_generate")
+    
+    query = state.get("original_query", "")
+    result = StructuredQueryTool.run(query)
+    
+    updates = {
+        "answer": result.summary,
+        "answer_ok": result.success,
+        "confidence": 0.95 if result.success else 0.5,
+        "warning": None if result.success else "構造化クエリの実行に失敗したか、未対応の操作です。",
+        "missing_aspects": [],
+        "answer_critic_skipped_reason": None,
+        "sources": [{"source_name": result.source_name, "type": "structured_data"}] if result.success else [],
+        "structured_query_source_name": result.source_name if result.success else "Unknown",
+        **runtime_updates,
+    }
+    return updates
+
+
 # 関数の役割: 生成回答のソース忠実性評価
 # 入出力: AgentStateを受け取り、更新差分を返す
 # state更新: answer_ok, confidence などを更新
@@ -1399,6 +1425,8 @@ async def commit_answer_node(state: AgentState) -> dict[str, Any]:
 def route_after_router(state: AgentState) -> str:
     if state["route"] == "calculator":
         return "calculator"
+    if state["route"] == "structured_query_tool":
+        return "structured_query_node"
     if state["route"] == "direct_answer":
         return "direct_generate"
         
@@ -1495,6 +1523,7 @@ builder.add_node("answer_critic", answer_critic_node)
 builder.add_node("commit_answer", commit_answer_node)
 builder.add_node("direct_generate", direct_generate_node)
 builder.add_node("calc_generate", calc_generate_node)
+builder.add_node("structured_query_node", structured_query_node)
 builder.add_node("compare_extract", compare_extract_node)
 builder.add_node("compare_retrieve", compare_retrieve_node)
 builder.add_node("compare_merge", compare_merge_node)
@@ -1507,6 +1536,7 @@ builder.add_conditional_edges(
     route_after_router,
     {
         "calculator": "calculator",
+        "structured_query_node": "structured_query_node",
         "direct_generate": "direct_generate",
         "generate": "generate",
         "compare_extract": "compare_extract",
@@ -1536,6 +1566,7 @@ builder.add_conditional_edges(
 builder.add_edge("compare_generate", "commit_answer")
 
 builder.add_edge("calculator", "calc_generate")
+builder.add_edge("structured_query_node", "commit_answer")
 builder.add_edge("direct_generate", "commit_answer")
 builder.add_edge("calc_generate", "commit_answer")
 builder.add_edge("retrieve", "retrieval_critic")

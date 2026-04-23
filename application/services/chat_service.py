@@ -94,10 +94,19 @@ class ChatService:
             filtered_count = 0
             confidence = 1.0 if route == "calculator" else None
             warning = None
+            source_name = None
+        elif route == "structured_query_tool":
+            sources = None
+            filtered_count = 0
+            confidence = round(final_state.get("confidence", 0.95), 2)
+            warning = final_state.get("warning")
+            # 構造化クエリの結果からデータソース名を取得
+            source_name = final_state.get("structured_query_source_name")
         else:
             sources, filtered_count = ChatService._extract_sources(final_state, answer)
             confidence = round(final_state.get("confidence", 0.5), 2)
             warning = final_state.get("warning")
+            source_name = None
 
         logger.info(
             {
@@ -131,6 +140,7 @@ class ChatService:
             query_type=query_type,
             route=route,
             sources=sources,
+            source_name=source_name,
             confidence=confidence,
             warning=warning,
         )

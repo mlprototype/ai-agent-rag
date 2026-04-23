@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 class LLMRouteDecision(BaseModel):
-    route: Literal["direct_answer", "calculator", "agentic_retrieval"]
+    route: Literal["direct_answer", "calculator", "structured_query_tool", "agentic_retrieval"]
     reason: str
 
 
@@ -55,6 +55,7 @@ class AgentRouter:
                     "あなたは問い合わせルーターです。ユーザーの最新メッセージを以下の3分類のいずれかに必ず分類してください。\n"
                     "- direct_answer: 挨拶、雑談、一般的な短い会話、外部検索が不要な質問\n"
                     "- calculator: 算術計算や数式評価が主目的の質問\n"
+                    "- structured_query_tool: 売上、在庫、注文件数などのデータに関する集計、問い合わせ、操作全般（非サポートの更新操作なども含む）\n"
                     "- agentic_retrieval: 検索済みナレッジや複数観点の取得が必要な質問\n"
                     "JSONで返し、route と短い reason を含めてください。"
                 ),
@@ -93,8 +94,17 @@ class AgentRouter:
                 # この時間を超過した場合にタイムアウト例外を発生させ、フォールバックへ移行する判断に使われる。
                 timeout=timeout_seconds if timeout_seconds is not None else settings.router_timeout_seconds,
             )
+            if llm_decision.route == "agentic_retrieval":
+                query_type = "retrieval_complex"
+            elif llm_decision.route == "structured_query_tool":
+                query_type = "structured_query"
+            elif llm_decision.route == "direct_answer":
+                query_type = "direct"
+            else:
+                query_type = "calc"
+                
             return RouteDecision(
-                query_type="retrieval_complex" if llm_decision.route == "agentic_retrieval" else ("direct" if llm_decision.route == "direct_answer" else "calc"), # LLM result is coarse
+                query_type=query_type, # type: ignore
                 route=llm_decision.route, # type: ignore
                 routing_layer="llm",
                 source="llm_success",

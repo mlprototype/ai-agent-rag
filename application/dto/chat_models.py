@@ -29,5 +29,6 @@ class ChatResponse(BaseModel):
     query_type: Optional[str] = Field(default=None, description="推論されたクエリのタイプ。")
     route: Optional[str] = Field(default=None, description="実行されたルーティング経路。")
     sources: Optional[List[Source]] = Field(default=None, description="回答を生成するために使用されたソースのリスト（RAG利用時のみ）。")
+    source_name: Optional[str] = Field(default=None, description="データソース名（構造化クエリ利用時など）。")
     confidence: Optional[float] = Field(default=None, description="回答の信頼度スコア（0.0〜1.0）。計算などの場合は省略されるか1.0となります。")
     warning: Optional[str] = Field(default=None, description="回答に対する注意メッセージ。")

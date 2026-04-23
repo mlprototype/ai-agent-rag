@@ -8,8 +8,8 @@ from pydantic import BaseModel
 from domain.services.compare_intent import extract_targets
 
 class RouteDecision(BaseModel):
-    query_type: Literal["direct", "calc", "compare", "definition", "retrieval_complex"]
-    route: Literal["direct_answer", "calculator", "agentic_retrieval", "fallback_retrieval"]
+    query_type: Literal["direct", "calc", "structured_query", "compare", "definition", "retrieval_complex"]
+    route: Literal["direct_answer", "calculator", "structured_query_tool", "agentic_retrieval", "fallback_retrieval"]
     routing_layer: Literal["heuristic", "llm", "fallback"]
     source: Literal["heuristic_match", "llm_success", "llm_timeout_fallback", "llm_error_fallback"]
     confidence: float
@@ -28,6 +28,11 @@ class HeuristicRouter:
         "こんにちは", "こんばんは", "おはよう", "ありがとう", "thank you", "thanks", "hello", "hi"
     ]
     
+    _STRUCTURED_KEYWORDS_AGG = ["合計", "平均", "件数", "トップ", "上位", "最大", "最小", "ランキング"]
+    _STRUCTURED_KEYWORDS_BIZ = ["売上", "在庫", "注文件数", "件", "金額", "集計"]
+    _STRUCTURED_KEYWORDS_NEG = ["方法", "理由", "なぜ", "改善", "コツ", "仕組み"]
+    _STRUCTURED_KEYWORDS_WRITE = ["update", "delete", "insert", "drop", "alter", "create", "削除", "更新", "変更", "追加"]
+    
     _COMPARE_KEYWORDS = ["違い", "比較", "差", "使い分け", "vs", "versus", "メリット", "デメリット", "どちら", "どっち", "べき", "向いている"]
     _DEFINITION_KEYWORDS = ["とは何", "とは", "って何", "の意味", "定義"]
 
@@ -43,7 +48,16 @@ class HeuristicRouter:
             if len(normalized) <= 15 and "教えて" not in normalized and "について" not in normalized:
                 return cls._build_decision("direct", "direct_answer", "direct_greeting", 0.9)
 
-        # 2. Calc
+        # 2. Structured Query (Business Aggregations / Operations)
+        has_neg = any(k in normalized for k in cls._STRUCTURED_KEYWORDS_NEG)
+        if not has_neg:
+            has_agg = any(k in normalized for k in cls._STRUCTURED_KEYWORDS_AGG)
+            has_biz = any(k in normalized for k in cls._STRUCTURED_KEYWORDS_BIZ)
+            has_write = any(k in normalized for k in cls._STRUCTURED_KEYWORDS_WRITE)
+            if has_biz and (has_agg or has_write):
+                return cls._build_decision("structured_query", "structured_query_tool", "structured_query_keywords", 0.95)
+
+        # 3. Calc
         calc_candidate = "".join(re.findall(r"[\d\s\.\(\)\+\-\*/%]+", query)).strip()
         if cls._CALC_JP_PATTERN.match(normalized):
             return cls._build_decision("calc", "calculator", "calc_expression_jp", 1.0)
@@ -52,7 +66,7 @@ class HeuristicRouter:
             if cls._CALC_PATTERN.match(normalized):
                 return cls._build_decision("calc", "calculator", "calc_expression", 1.0)
 
-        # 3. Compare
+        # 4. Compare
         if enable_compare:
             has_compare = any(k in normalized for k in cls._COMPARE_KEYWORDS)
             has_and = any(k in normalized for k in ["と", "vs", "and"])
@@ -64,7 +78,7 @@ class HeuristicRouter:
                     if targets is not None:
                         return cls._build_decision("compare", "agentic_retrieval", "compare_keywords", 0.9)
 
-        # 4. Definition
+        # 5. Definition
         # "Xとは何ですか", "Xとは"
         has_def = any(k in normalized for k in cls._DEFINITION_KEYWORDS)
         if has_def:

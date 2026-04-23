@@ -11,12 +11,12 @@ class AgentState(TypedDict, total=False):
     messages: Annotated[list[BaseMessage], operator.add]
     session_id: str
     original_query: str
-    route: Literal["direct_answer", "calculator", "agentic_retrieval", "fallback_retrieval"]
+    route: Literal["direct_answer", "calculator", "structured_query_tool", "agentic_retrieval", "fallback_retrieval"]
     router_reason: str
     router_uncertain: bool
 
     # クエリ解析・カバレッジ情報
-    query_type: Literal["direct", "calc", "compare", "definition", "retrieval_complex"]
+    query_type: Literal["direct", "calc", "structured_query", "compare", "definition", "retrieval_complex"]
     routing_layer: Literal["heuristic", "llm", "fallback"]
     route_decision_source: Literal["heuristic_match", "llm_success", "llm_timeout_fallback", "llm_error_fallback"]
     heuristic_matched: bool
@@ -52,6 +52,7 @@ class AgentState(TypedDict, total=False):
     must_generate: bool
     retrieval_degraded: bool
     confidence_cap: float | None
+    structured_query_source_name: str
 
     # 予算・タイムアウト・フォールバック管理
     budget_started_at: float

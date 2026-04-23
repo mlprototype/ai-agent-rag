@@ -15,7 +15,7 @@
 
 | 機能 | 概要 |
 | :--- | :--- |
-| **動的ルーティング（Agent Routing）** | Heuristic + LLM Router が `direct_answer` / `calculator` / `agentic_retrieval` / `fallback_retrieval` を判定 |
+| **動的ルーティング（Agent Routing）** | Heuristic + LLM Router が `direct_answer` / `calculator` / `structured_query_tool` / `agentic_retrieval` / `fallback_retrieval` を判定 |
 | **Clean Architecture** | 業務ロジック、アダプター、インターフェースを疎結合にレイヤー分離 |
 | **リアルタイム生成（StreamingResponse）** | FastAPI `StreamingResponse` による `text/event-stream` 配信。通常は `generate` ノードの出力を逐次返却 |
 | **耐障害性（Stage Timeout & Retry）** | 外部API遅延に対する `asyncio.wait_for` タイムアウト（5秒）とフォールバックエラー処理 |
@@ -72,6 +72,15 @@ Phase 3 では、Agentic RAG の制御面を強化し、ルーティング、比
 | **Partial Retrieval** | 並列検索の部分成功を許容し、全失敗と部分失敗を区別して品質判定 |
 | **Warning / Observability** | `warning_codes`（内部）と user-facing `warning`（外部）を分離。`retrieval_quality_level` で品質段階を可視化 |
 | **Dynamic Skip** | rerank / critic / rewrite を残予算に応じて段階的にスキップ |
+
+#### Sprint 4: Structured Query Evolution
+
+| 機能 | 概要 |
+| :--- | :--- |
+| **SQLite Backend** | Python 辞書ベースから SQLite 実データベース実行へ移行。`data/structured_query.db` による実運用に近い集計を実現 |
+| **責務分離 (Pipeline)** | Parse → Validate → SQL Builder → Execute (SQLite) → Format の 5 段階パイプラインに整理 |
+| **Read-only 安全制御** | SQL インジェクション対策（プレースホルダ）に加え、実行レベルでの破壊的キーワード（INSERT/UPDATE/DELETE等）の厳格なブロック |
+| **Standardized Response** | 構造化クエリ専用の `source_name`（例: `SQLite (sales)`）をレスポンスに付与。RAG との識別性を向上 |
 
 これにより、不要なAPIコストとレイテンシを削減し、**企業利用に耐える高精度かつ自律的な Production RAG** を実現しています。
 
@@ -203,6 +212,7 @@ flowchart TD
     Q["ユーザークエリ"] --> H{"Heuristic<br/>Router"}
     H -->|"greeting / short"| D["direct_answer"]
     H -->|"数式パターン"| C["calculator"]
+    H -->|"売上 / 件数 / トップ等"| SQ["structured_query<br/>(structured_query_tool)"]
     H -->|"AとBの違い / vs"| CMP["compare<br/>(compare_fast_path)"]
     H -->|"Xとは / 定義"| DEF["definition<br/>(agentic_retrieval)"]
     H -->|"マッチなし"| LLM{"LLM Router<br/>(GPT-4o-mini)"}
@@ -216,9 +226,21 @@ flowchart TD
 | :--- | :--- | :--- |
 | `direct` | `direct_answer` | → generate → commit |
 | `calc` | `calculator` | → calculator → generate → commit |
+| `structured_query` | `structured_query_tool` | → parse → validate → execute → commit |
 | `compare` | `agentic_retrieval` | → **compare_fast_path**（下記参照） |
 | `definition` | `agentic_retrieval` | → retrieve → retrieval_critic → generate → answer_critic → commit |
 | `retrieval_complex` | `agentic_retrieval` | → retrieve → critic → decompose/rewrite loop → generate → answer_critic → commit |
+
+#### 各ルートの役割分担と Structured Query の価値
+
+Agentic RAG の価値は、Control Plane（ルーター）が質問の性質に応じて適切な処理経路を選択する点にあります。無条件に検索を実行するのではなく、目的に応じて以下のように経路を分離して扱います。
+
+- **agentic_retrieval (RAG)**: 非構造化知識（マニュアル、社内規定などのドキュメント）向け。Vector + Keyword の Hybrid Search でコンテキストを収集します。
+- **structured_query_tool**: 構造化データ（売上、在庫、注文件数などの業務データ）向け。SQLite 上で安全な集計 SQL を実行し、確定的な値を返します。
+- **compare_fast_path**: 比較専用（AとBの違いなど）。対象を特定して並列検索を行う特化型経路です。
+
+**Calculator の扱いについて**:
+`calculator` は単純計算（四則演算など）用の deterministic な軽量経路として維持していますが、既存の実装のみをサポートする **deprecated（非推奨）** な扱いです。今後、業務的な価値を持つ構造化問い合わせ（ランキング、件数、平均などの複雑な集計処理）は、すべて `structured_query_tool` に集約・拡張する方針です。
 
 `ROUTER_HEURISTIC_CONFIDENCE_THRESHOLD_PCT` の既定値は `85` です。LLM Router が timeout / error の場合は `route=fallback_retrieval` に落とし、`retrieve_once → generate → commit` の単発経路で応答します。
 
@@ -705,6 +727,7 @@ ai-agent-rag/
 - **Compare Quality Gate の本接続**: `CompareQualityGate` を graph に接続し、compare fast-path の品質判定を実測化
 - **Adaptive Budget**: クエリ複雑度 × 過去のレイテンシ実績に基づく動的予算調整
 - **Cross-encoder Reranker**: Cohere Reranker の本番有効化と精度検証
+- **SQL Agent 化 (Structured Query の拡張)**: SQLite 版の実装、read-only SQL 実行、limited Text-to-SQL、schema-aware routing、SQL validation (allowlist/denylist 強化) などは本フェーズのスコープ外とし、今後の拡張として見据えています。
 
 ---
 
