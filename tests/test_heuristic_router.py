@@ -31,6 +31,7 @@ class TestHeuristicRouter(unittest.TestCase):
             decision = HeuristicRouter.route(q)
             self.assertIsNotNone(decision, f"Failed on {q}")
             self.assertEqual(decision.query_type, "calc", f"Failed on {q}")
+            self.assertEqual(decision.route, "direct_answer", f"Failed on {q}")
 
     def test_calc_false_positives(self):
         invalid = ["1+1の仕組みを教えて", "2023年の売上は"]

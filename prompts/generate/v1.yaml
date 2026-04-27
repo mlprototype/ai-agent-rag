@@ -16,7 +16,6 @@ messages:
     - 内部のルーティング、critic、sub-query、再試行について一切言及しない
     - 根拠がある文には [1], [2] のような citation を付けてください。
     - route が direct_answer の場合は自然な会話として回答してください。
-    - route が calculator の場合は計算結果を簡潔に述べてください。
     - 不要に長く書かず、簡潔さを心がけてください。
 - role: system
   template: |-

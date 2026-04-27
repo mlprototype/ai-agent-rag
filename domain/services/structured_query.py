@@ -38,42 +38,62 @@ def fail_safe_result(
 def parse_structured_query_intent(query: str) -> StructuredQueryIntent:
     """
     自然文から構造化クエリの意図を抽出します。
+    ヒューリスティックな正規表現とキーワードマッチングを使用します。
     """
     query_lower = query.lower()
     
-    # Dataset
+    # Dataset 判定 (日本語キーワード + 英名)
     target_dataset = "unknown"
-    if "売上" in query_lower or "販売" in query_lower or "注文" in query_lower:
+    if any(k in query_lower for k in ["売上", "販売", "注文", "sales"]):
         target_dataset = "sales"
-    elif "在庫" in query_lower:
+    elif any(k in query_lower for k in ["在庫", "inventory"]):
         target_dataset = "inventory"
         
-    # Operation
+    # Operation 判定
     operation = "unknown"
-    if "トップ" in query_lower or "上位" in query_lower or "ランキング" in query_lower:
+    if any(k in query_lower for k in ["トップ", "上位", "ランキング", "top"]):
         operation = "top_k"
-    elif "平均" in query_lower:
+    elif "平均" in query_lower or "avg" in query_lower:
         operation = "avg"
-    elif "合計" in query_lower or "総" in query_lower:
+    elif any(k in query_lower for k in ["合計", "総", "sum"]):
         operation = "sum"
-    elif "最大" in query_lower:
+    elif "最大" in query_lower or "max" in query_lower:
         operation = "max"
-    elif "最小" in query_lower:
+    elif "最小" in query_lower or "min" in query_lower:
         operation = "min"
-    elif "件数" in query_lower or "何件" in query_lower:
+    elif any(k in query_lower for k in ["件数", "何件", "カウント", "count"]):
         operation = "count"
+    elif any(k in query_lower for k in ["一覧", "リスト", "list"]):
+        operation = "list"
         
-    # Metric
+    # Metric (指標) 判定 - 明示的な指定を優先
     target_metric = None
-    if target_dataset == "sales":
-        if "件数" in query_lower:
-            target_metric = "units_sold"
-        else:
+    
+    # フィールド名の直接言及をチェック
+    if "product_id" in query_lower:
+        target_metric = "product_id"
+    elif "units_sold" in query_lower:
+        target_metric = "units_sold"
+    elif "sales" in query_lower and target_dataset == "sales":
+        # "sales" がデータセット名と指標名の両方に使われるため文脈で判断
+        if any(k in query_lower for k in ["合計", "平均", "最大", "最小"]):
             target_metric = "sales"
-    elif target_dataset == "inventory":
+    elif "stock" in query_lower:
         target_metric = "stock"
+    
+    # デフォルト指標の設定（明示的な指定がない場合）
+    if not target_metric:
+        if target_dataset == "sales":
+            if operation == "count":
+                target_metric = "units_sold" # 件数なら販売数(レコード数)
+            elif operation == "list":
+                target_metric = "product_id" # 一覧なら商品ID
+            else:
+                target_metric = "sales"      # それ以外は金額
+        elif target_dataset == "inventory":
+            target_metric = "stock"
         
-    # Filters
+    # Filters 判定
     filters = {}
     if re.search(r'q1|第1四半期', query_lower):
         filters["period"] = "2025-Q1"
@@ -123,6 +143,9 @@ class LocalDictDataSource(StructuredDataSource):
         
         if intent.operation == "count":
             return [{"result": len(filtered_data)}]
+            
+        elif intent.operation == "list":
+            return filtered_data
             
         elif intent.operation == "sum":
             val = sum(row[metric] for row in filtered_data)  # type: ignore

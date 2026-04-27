@@ -4,7 +4,7 @@
 
 from domain.services.structured_query_types import StructuredQueryIntent, ValidationResult
 
-ALLOWED_OPERATIONS = {"count", "sum", "avg", "top_k", "max", "min"}
+ALLOWED_OPERATIONS = {"count", "sum", "avg", "top_k", "max", "min", "list"}
 ALLOWED_DATASETS = {"sales", "inventory"}
 ALLOWED_FIELDS = {
     "sales": {"sales", "units_sold", "product_id", "period", "category", "product_name"},

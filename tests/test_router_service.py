@@ -12,7 +12,7 @@ class TestRouterService(unittest.IsolatedAsyncioTestCase):
         # Mock heuristic to return a hit
         mock_decision = MagicMock()
         mock_decision.query_type = "calc"
-        mock_decision.route = "calculator"
+        mock_decision.route = "direct_answer"
         mock_decision.confidence = 1.0
         mock_hr_route.return_value = mock_decision
 

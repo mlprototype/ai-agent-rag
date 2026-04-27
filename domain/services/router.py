@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 class LLMRouteDecision(BaseModel):
-    route: Literal["direct_answer", "calculator", "structured_query_tool", "agentic_retrieval"]
+    route: Literal["direct_answer", "structured_query_tool", "agentic_retrieval"]
     reason: str
 
 
@@ -53,9 +53,8 @@ class AgentRouter:
                 (
                     "system",
                     "あなたは問い合わせルーターです。ユーザーの最新メッセージを以下の3分類のいずれかに必ず分類してください。\n"
-                    "- direct_answer: 挨拶、雑談、一般的な短い会話、外部検索が不要な質問\n"
-                    "- calculator: 算術計算や数式評価が主目的の質問\n"
-                    "- structured_query_tool: 売上、在庫、注文件数などのデータに関する集計、問い合わせ、操作全般（非サポートの更新操作なども含む）\n"
+                    "- direct_answer: 挨拶、雑談、一般的な短い会話、外部検索が不要な質問（算術計算や単純な数式評価を含む）\n"
+                    "- structured_query_tool: 売上、在庫、注文件数などのデータセットに関する集計、問い合わせ、操作全般。calc（数式評価）とは明確に区別し、DBアクセスが必要な場合のみこちらを選択してください。\n"
                     "- agentic_retrieval: 検索済みナレッジや複数観点の取得が必要な質問\n"
                     "JSONで返し、route と短い reason を含めてください。"
                 ),
@@ -99,9 +98,11 @@ class AgentRouter:
             elif llm_decision.route == "structured_query_tool":
                 query_type = "structured_query"
             elif llm_decision.route == "direct_answer":
-                query_type = "direct"
-            else:
-                query_type = "calc"
+                # 数式が含まれている場合は calc と判定し、ノード側で決定論的評価を行う
+                if cls._CALC_PATTERN.match(query) and any(ch.isdigit() for ch in query):
+                    query_type = "calc"
+                else:
+                    query_type = "direct"
                 
             return RouteDecision(
                 query_type=query_type, # type: ignore

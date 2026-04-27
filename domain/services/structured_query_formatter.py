@@ -21,6 +21,9 @@ def format_structured_result(
         if intent.operation == "count":
             val = rows[0].get("result", 0)
             summary = f"該当するデータは {val} 件です。"
+        elif intent.operation == "list":
+            vals = [str(r.get(intent.target_metric)) for r in rows if intent.target_metric in r]
+            summary = f"該当する {intent.target_metric} は以下の通りです: {', '.join(vals)}。"
         elif intent.operation == "sum":
             val = rows[0].get("result", 0) or 0
             summary = f"合計は {val:,} です。"

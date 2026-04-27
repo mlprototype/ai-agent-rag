@@ -7,7 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 class StructuredQueryIntent(BaseModel):
-    operation: Literal["sum", "avg", "count", "top_k", "max", "min", "unknown"]
+    operation: Literal["sum", "avg", "count", "top_k", "max", "min", "list", "unknown"]
     target_metric: str | None
     filters: dict[str, Any]
     target_dataset: Literal["sales", "inventory", "unknown"]

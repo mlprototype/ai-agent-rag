@@ -1,0 +1,111 @@
+# {{ title }}
+
+## 📊 エグゼクティブ・サマリー
+
+{% for item in summary_points -%}
+- {{ item }}
+{% endfor %}
+
+## 📈 全体指標比較
+
+| 指標 | Baseline | Current | 差分 |
+| :--- | :---: | :---: | :---: |
+| 総件数 | {{ baseline.summary.total_count if baseline else '-' }} | {{ current.summary.total_count }} | {{ diffs.total_count if diffs else '-' }} |
+| 回答生成率 | {{ "%.1f%%"|format(baseline.summary.response_generated_rate * 100) if baseline else '-' }} | {{ "%.1f%%"|format(current.summary.response_generated_rate * 100) }} | {{ "%+.1f%%"|format(diffs.response_generated_rate * 100) if diffs else '-' }} |
+| 品質基準合格率 | {{ "%.1f%%"|format(baseline.summary.answer_ok_rate * 100) if baseline else '-' }} | {{ "%.1f%%"|format(current.summary.answer_ok_rate * 100) }} | {{ "%+.1f%%"|format(diffs.answer_ok_rate * 100) if diffs else '-' }} |
+| 平均類似度 | {{ "%.2f"|format(baseline.summary.avg_similarity) if baseline else '-' }} | {{ "%.2f"|format(current.summary.avg_similarity) }} | {{ "%+.2f"|format(diffs.avg_similarity) if diffs else '-' }} |
+| 平均信頼度 | {{ "%.2f"|format(baseline.summary.avg_confidence) if baseline else '-' }} | {{ "%.2f"|format(current.summary.avg_confidence) }} | {{ "%+.2f"|format(diffs.avg_confidence) if diffs else '-' }} |
+| 警告発生率 | {{ "%.1f%%"|format(baseline.summary.warning_rate * 100) if baseline else '-' }} | {{ "%.1f%%"|format(current.summary.warning_rate * 100) }} | {{ "%+.1f%%"|format(diffs.warning_rate * 100) if diffs else '-' }} |
+| レイテンシ p50 | {{ baseline.summary.latency_p50_ms if baseline else '-' }}ms | {{ current.summary.latency_p50_ms }}ms | {{ "%+d"|format(diffs.latency_p50_ms) if diffs else '-' }}ms |
+| レイテンシ p95 | {{ baseline.summary.latency_p95_ms if baseline else '-' }}ms | {{ current.summary.latency_p95_ms }}ms | {{ "%+d"|format(diffs.latency_p95_ms) if diffs else '-' }}ms |
+
+---
+
+## 🗂️ カテゴリ別詳細
+
+### Query Type 別
+| Query Type | 件数 | 合格率 | 類似度 | p50 |
+| :--- | :---: | :---: | :---: | :---: |
+{% for qt, stats in current.by_query_type.items() -%}
+| {{ qt }} | {{ stats.total_count }} | {{ "%.1f%%"|format(stats.answer_ok_rate * 100) }} | {{ "%.2f"|format(stats.avg_similarity) }} | {{ stats.latency_p50_ms }}ms |
+{% endfor %}
+
+### Route 別
+| Route | 件数 | 合格率 | 類似度 | p50 |
+| :--- | :---: | :---: | :---: | :---: |
+{% for route, stats in current.by_route.items() -%}
+| {{ route }} | {{ stats.total_count }} | {{ "%.1f%%"|format(stats.answer_ok_rate * 100) }} | {{ "%.2f"|format(stats.avg_similarity) }} | {{ stats.latency_p50_ms }}ms |
+{% endfor %}
+
+{% if sq_analysis %}
+### 🛠️ Structured Query 分析
+※ `source_name` はデータソース識別子であり、検索引用元とは異なります。
+
+| 項目 | 値 |
+| :--- | :---: |
+| 対象件数 | {{ sq_analysis.total_count }} |
+| 回答生成率 | {{ "%.1f%%"|format(sq_analysis.response_generated_rate * 100) }} |
+| 品質合格率 | {{ "%.1f%%"|format(sq_analysis.answer_ok_rate * 100) }} |
+| Fail-safe 率 | **{{ "%.1f%%"|format(sq_analysis.fail_safe_rate * 100) }}** |
+
+#### Source Name 分布 (Top {{ top_n }})
+{% for sname, count in sq_analysis.source_counts.items() -%}
+- `{{ sname }}`: {{ count }} 件
+{% endfor %}
+
+#### 非成功 Reason Code
+{% for code, count in sq_analysis.reason_codes.items() -%}
+- `{{ code }}`: {{ count }} 件
+{% endfor %}
+{% endif %}
+
+---
+
+## ⚠️ 要対応ケース (Action Required)
+以下のいずれかの条件に合致した要注意ケース（計 {{ actionable_cases|length }} 件）を抽出しています。
+- 低類似度 (< 0.5) / 低信頼度 (< 0.5)
+- 品質基準不合格 (answer_ok == false)
+- 警告発生 / 縮退動作 / フォールバック発生
+
+| クエリ | 理由 | 類似度 | 信頼度 | 比較(Diff) |
+| :--- | :--- | :---: | :---: | :--- |
+{% for case in actionable_cases -%}
+| {{ case.query[:50] }}{{ '...' if case.query|length > 50 }} | {{ case.reason_brief }} | {{ "%.2f"|format(case.current.similarity) }} | {{ "%.2f"|format(case.current.confidence) }} | {{ case.diff_status }} |
+{% endfor %}
+
+---
+
+## 🔍 分布統計 (Top {{ top_n }})
+
+<details>
+<summary>警告コード / フォールバック状況の詳細を表示</summary>
+
+#### Warning Codes
+{% for code, count in current.distributions.warning_codes.items() -%}
+- `{{ code }}`: {{ count }}
+{% endfor %}
+
+#### Fallback Levels
+{% for level, count in current.distributions.fallback_level.items() -%}
+- `{{ level }}`: {{ count }}
+{% endfor %}
+
+#### Retrieval Quality
+{% for level, count in current.distributions.retrieval_quality_level.items() -%}
+- `{{ level }}`: {{ count }}
+{% endfor %}
+
+</details>
+
+{% if added_cases %}
+## 🆕 新規追加ケース
+- {{ added_cases|length }} 件のクエリが新たに追加されました。
+{% endif %}
+
+{% if removed_cases %}
+## 🗑️ 削除されたケース
+- {{ removed_cases|length }} 件のクエリがデータセットから削除されました。
+{% endif %}
+
+---
+*Report generated at: {{ current.metadata.timestamp }}*

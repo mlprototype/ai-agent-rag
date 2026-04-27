@@ -9,7 +9,7 @@ from domain.services.compare_intent import extract_targets
 
 class RouteDecision(BaseModel):
     query_type: Literal["direct", "calc", "structured_query", "compare", "definition", "retrieval_complex"]
-    route: Literal["direct_answer", "calculator", "structured_query_tool", "agentic_retrieval", "fallback_retrieval"]
+    route: Literal["direct_answer", "structured_query_tool", "agentic_retrieval", "fallback_retrieval"]
     routing_layer: Literal["heuristic", "llm", "fallback"]
     source: Literal["heuristic_match", "llm_success", "llm_timeout_fallback", "llm_error_fallback"]
     confidence: float
@@ -28,8 +28,8 @@ class HeuristicRouter:
         "こんにちは", "こんばんは", "おはよう", "ありがとう", "thank you", "thanks", "hello", "hi"
     ]
     
-    _STRUCTURED_KEYWORDS_AGG = ["合計", "平均", "件数", "トップ", "上位", "最大", "最小", "ランキング"]
-    _STRUCTURED_KEYWORDS_BIZ = ["売上", "在庫", "注文件数", "件", "金額", "集計"]
+    _STRUCTURED_KEYWORDS_AGG = ["合計", "平均", "件数", "トップ", "上位", "最大", "最小", "ランキング", "一覧", "リスト", "list"]
+    _STRUCTURED_KEYWORDS_BIZ = ["売上", "在庫", "注文件数", "件", "金額", "集計", "sales", "inventory"]
     _STRUCTURED_KEYWORDS_NEG = ["方法", "理由", "なぜ", "改善", "コツ", "仕組み"]
     _STRUCTURED_KEYWORDS_WRITE = ["update", "delete", "insert", "drop", "alter", "create", "削除", "更新", "変更", "追加"]
     
@@ -57,14 +57,14 @@ class HeuristicRouter:
             if has_biz and (has_agg or has_write):
                 return cls._build_decision("structured_query", "structured_query_tool", "structured_query_keywords", 0.95)
 
-        # 3. Calc
+        # 3. Calc (Shrunk to deterministic utility in direct_answer)
         calc_candidate = "".join(re.findall(r"[\d\s\.\(\)\+\-\*/%]+", query)).strip()
         if cls._CALC_JP_PATTERN.match(normalized):
-            return cls._build_decision("calc", "calculator", "calc_expression_jp", 1.0)
+            return cls._build_decision("calc", "direct_answer", "calc_expression_jp", 1.0)
         elif calc_candidate and any(ch.isdigit() for ch in calc_candidate) and cls._CALC_SYMBOL_PATTERN.search(calc_candidate):
             # If the user's explicit intent is just to calculate this formula
             if cls._CALC_PATTERN.match(normalized):
-                return cls._build_decision("calc", "calculator", "calc_expression", 1.0)
+                return cls._build_decision("calc", "direct_answer", "calc_expression", 1.0)
 
         # 4. Compare
         if enable_compare:

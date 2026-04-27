@@ -89,10 +89,11 @@ class ChatService:
             or final_state.get("retrieval_degraded")
         )
 
-        if route in ("calculator", "direct_answer"):
+        if route == "direct_answer":
             sources = None
             filtered_count = 0
-            confidence = 1.0 if route == "calculator" else None
+            # calc の場合は確信度 1.0, 挨拶などは None
+            confidence = round(final_state.get("confidence", 0.8), 2) if query_type == "calc" else None
             warning = None
             source_name = None
         elif route == "structured_query_tool":

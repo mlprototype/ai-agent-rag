@@ -11,7 +11,7 @@ class AgentState(TypedDict, total=False):
     messages: Annotated[list[BaseMessage], operator.add]
     session_id: str
     original_query: str
-    route: Literal["direct_answer", "calculator", "structured_query_tool", "agentic_retrieval", "fallback_retrieval"]
+    route: Literal["direct_answer", "structured_query_tool", "agentic_retrieval", "fallback_retrieval"]
     router_reason: str
     router_uncertain: bool
 
@@ -46,8 +46,6 @@ class AgentState(TypedDict, total=False):
     missing_aspects: list[str]
     coverage_score: float
     answer: str
-    calculator_expression: str
-    calculator_result: str
     force_generate: bool
     must_generate: bool
     retrieval_degraded: bool

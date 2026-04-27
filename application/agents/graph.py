@@ -12,7 +12,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 
-from adapters.tools.calculator import calculate_expression
+from domain.services.expression_evaluator import calculate_expression
 from application.agents.state import AgentState
 from config.settings import get_settings
 from domain.models.retrieval_models import RetrievedChunk
@@ -46,7 +46,7 @@ _SETTINGS = get_settings()
 _RERANKER = build_reranker()
 _GENERATE_CHAIN = None
 _DIRECT_CHAIN = None
-_CALC_PATTERN = re.compile(r"[\d\s\.\(\)\+\-\*/%]+")
+_CALC_PATTERN = re.compile(r"[\d\s\.\(\)\+\-\*/%足すたすプラス引くひくマイナスかける掛けるタイムズ割るわるスラッシュ]+")
 # タイムアウト閾値: これ未満の残予算では完了が見込めないためタイムアウトとして扱う
 _MIN_STAGE_TIMEOUT_MS = 250
 _HIGH_COMPLEXITY_HINTS = (
@@ -530,8 +530,6 @@ async def initialize_node(state: AgentState) -> dict[str, Any]:
         "missing_aspects": [],
         "coverage_score": 0.0,
         "answer": "",
-        "calculator_expression": "",
-        "calculator_result": "",
         "force_generate": False,
         "must_generate": False,
         "retrieval_degraded": False,
@@ -613,33 +611,7 @@ async def router_node(state: AgentState) -> dict[str, Any]:
     }
 
 
-# 関数の役割: 数式計算の実行
-# 入出力: AgentStateを受け取り、更新差分を返す
-# state更新: calculator_result, confidence などを更新
-# フォールバック: 計算エラー時は低い確信度を設定
-async def calculator_node(state: AgentState) -> dict[str, Any]:
-    expression = _extract_expression(state["original_query"])
-    try:
-        value = calculate_expression(expression)
-        if value.is_integer():
-            rendered = str(int(value))
-        else:
-            rendered = str(round(value, 6))
-        return {
-            "calculator_expression": expression,
-            "calculator_result": rendered,
-            "confidence": 0.98,
-            "warning": None,
-            **_budget_runtime_updates(state),
-        }
-    except Exception:
-        return {
-            "calculator_expression": expression,
-            "calculator_result": "",
-            "confidence": 0.4,
-            "warning": "This answer may be incomplete",
-            **_budget_runtime_updates(state),
-        }
+# calculator_node and its dependencies are moved to direct_generate_node for simplification
 
 
 # 関数の役割: 単一クエリによる検索の実行
@@ -1004,7 +976,6 @@ async def generate_node(state: AgentState) -> dict[str, Any]:
         response = await chain.ainvoke(
             {
                 "route": state["route"],
-                "calculator_result": state.get("calculator_result") or "なし",
                 "retrieval_context": retrieval_context,
                 "sources_text": _sources_catalog(state.get("sources", [])),
                 "messages": list(state.get("messages", [])),
@@ -1088,8 +1059,30 @@ async def generate_node(state: AgentState) -> dict[str, Any]:
 # フォールバック: 特になし
 async def direct_generate_node(state: AgentState) -> dict[str, Any]:
     runtime_updates = _budget_runtime_updates(state, checkpoint="before_generate")
-    chain = _get_direct_chain()
     
+    # query_type が calc の場合、決定論的な expression_evaluator を使用する
+    if state.get("query_type") == "calc":
+        expression = _extract_expression(state["original_query"])
+        try:
+            value = calculate_expression(expression)
+            if value.is_integer():
+                rendered = str(int(value))
+            else:
+                rendered = str(round(value, 6))
+            return {
+                "answer": f"計算結果は {rendered} です。",
+                "confidence": 1.0,
+                "answer_ok": True,
+                "warning": None,
+                "missing_aspects": [],
+                "answer_critic_skipped_reason": None,
+                **runtime_updates,
+            }
+        except Exception:
+            # 評価失敗時は LLM に委ねるか、エラーを返す
+            pass
+
+    chain = _get_direct_chain()
     logger.info(f"Generating direct answer: route={state['route']}")
     response = await chain.ainvoke({
         "messages": list(state.get("messages", []))
@@ -1106,32 +1099,7 @@ async def direct_generate_node(state: AgentState) -> dict[str, Any]:
     }
 
 
-# 関数の役割: 計算ルート向けの回答フォーマット生成
-# 入出力: AgentStateを受け取り、更新差分を返す
-# state更新: answer などを更新
-# フォールバック: 特になし
-async def calc_generate_node(state: AgentState) -> dict[str, Any]:
-    runtime_updates = _budget_runtime_updates(state, checkpoint="before_generate")
-    result = state.get("calculator_result")
-    
-    if not result:
-        answer = "計算を実行できませんでした。"
-        answer_ok = False
-        confidence = 0.4
-    else:
-        answer = f"計算結果は {result} です。"
-        answer_ok = True
-        confidence = state.get("confidence", 0.98)
-        
-    return {
-        "answer": answer,
-        "confidence": confidence,
-        "answer_ok": answer_ok,
-        "warning": None if answer_ok else "This answer may be incomplete",
-        "missing_aspects": [],
-        "answer_critic_skipped_reason": None,
-        **runtime_updates,
-    }
+# calc_generate_node is removed in favor of integrated logic in direct_generate_node
 
 
 # 関数の役割: 構造化クエリルート向けの回答生成
@@ -1423,8 +1391,6 @@ async def commit_answer_node(state: AgentState) -> dict[str, Any]:
 # state更新: (ルーティング関数につき更新なし)
 # フォールバック: フォールバックルート判定時は1回検索へ遷移
 def route_after_router(state: AgentState) -> str:
-    if state["route"] == "calculator":
-        return "calculator"
     if state["route"] == "structured_query_tool":
         return "structured_query_node"
     if state["route"] == "direct_answer":
@@ -1509,7 +1475,6 @@ builder = StateGraph(AgentState)
 
 builder.add_node("initialize", initialize_node)
 builder.add_node("router", router_node)
-builder.add_node("calculator", calculator_node)
 builder.add_node("retrieve", retrieve_node)
 builder.add_node("retrieve_once", retrieve_node)
 builder.add_node("retrieval_critic", retrieval_critic_node)
@@ -1522,7 +1487,6 @@ builder.add_node("generate", generate_node)
 builder.add_node("answer_critic", answer_critic_node)
 builder.add_node("commit_answer", commit_answer_node)
 builder.add_node("direct_generate", direct_generate_node)
-builder.add_node("calc_generate", calc_generate_node)
 builder.add_node("structured_query_node", structured_query_node)
 builder.add_node("compare_extract", compare_extract_node)
 builder.add_node("compare_retrieve", compare_retrieve_node)
@@ -1535,7 +1499,6 @@ builder.add_conditional_edges(
     "router",
     route_after_router,
     {
-        "calculator": "calculator",
         "structured_query_node": "structured_query_node",
         "direct_generate": "direct_generate",
         "generate": "generate",
@@ -1565,10 +1528,8 @@ builder.add_conditional_edges(
 )
 builder.add_edge("compare_generate", "commit_answer")
 
-builder.add_edge("calculator", "calc_generate")
 builder.add_edge("structured_query_node", "commit_answer")
 builder.add_edge("direct_generate", "commit_answer")
-builder.add_edge("calc_generate", "commit_answer")
 builder.add_edge("retrieve", "retrieval_critic")
 builder.add_edge("retrieve_once", "generate")
 builder.add_conditional_edges(

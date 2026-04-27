@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 1000px; margin: 0 auto; padding: 20px; background-color: #f9f9f9; }
+        h1, h2, h3 { color: #2c3e50; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+        table { width: 100%; border-collapse: collapse; margin: 20px 0; background-color: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        th, td { padding: 12px; border: 1px solid #eee; text-align: left; }
+        th { background-color: #f8f9fa; font-weight: 600; }
+        tr:nth-child(even) { background-color: #fafafa; }
+        .summary-box { background-color: #fff; padding: 20px; border-radius: 8px; border-left: 5px solid #3498db; margin-bottom: 30px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .action-box { background-color: #fff; padding: 20px; border-radius: 8px; border-left: 5px solid #e74c3c; margin-bottom: 30px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.85em; font-weight: 600; }
+        .badge-success { background-color: #d4edda; color: #155724; }
+        .badge-warning { background-color: #fff3cd; color: #856404; }
+        .badge-danger { background-color: #f8d7da; color: #721c24; }
+        .diff-pos { color: #27ae60; font-weight: bold; }
+        .diff-neg { color: #e74c3c; font-weight: bold; }
+        .footer { margin-top: 50px; font-size: 0.9em; color: #7f8c8d; text-align: center; }
+    </style>
+</head>
+<body>
+
+    <h1>{{ title }}</h1>
+
+    <div class="summary-box">
+        <h2>📊 エグゼクティブ・サマリー</h2>
+        <ul>
+        {% for item in summary_points -%}
+            <li>{{ item }}</li>
+        {% endfor %}
+        </ul>
+    </div>
+
+    <h2>📈 全体指標比較</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>指標</th>
+                <th>Baseline</th>
+                <th>Current</th>
+                <th>差分</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>総件数</td>
+                <td>{{ baseline.summary.total_count if baseline else '-' }}</td>
+                <td>{{ current.summary.total_count }}</td>
+                <td>{{ "%+d"|format(diffs.total_count) if diffs else '-' }}</td>
+            </tr>
+            <tr>
+                <td>品質基準合格率</td>
+                <td>{{ "%.1f%%"|format(baseline.summary.answer_ok_rate * 100) if baseline else '-' }}</td>
+                <td>{{ "%.1f%%"|format(current.summary.answer_ok_rate * 100) }}</td>
+                <td class="{{ 'diff-pos' if diffs and diffs.answer_ok_rate > 0 else ('diff-neg' if diffs and diffs.answer_ok_rate < 0 else '') }}">
+                    {{ "%+.1f%%"|format(diffs.answer_ok_rate * 100) if diffs else '-' }}
+                </td>
+            </tr>
+            <tr>
+                <td>平均類似度</td>
+                <td>{{ "%.2f"|format(baseline.summary.avg_similarity) if baseline else '-' }}</td>
+                <td>{{ "%.2f"|format(current.summary.avg_similarity) }}</td>
+                <td>{{ "%+.2f"|format(diffs.avg_similarity) if diffs else '-' }}</td>
+            </tr>
+            <tr>
+                <td>平均信頼度</td>
+                <td>{{ "%.2f"|format(baseline.summary.avg_confidence) if baseline else '-' }}</td>
+                <td>{{ "%.2f"|format(current.summary.avg_confidence) }}</td>
+                <td>{{ "%+.2f"|format(diffs.avg_confidence) if diffs else '-' }}</td>
+            </tr>
+            <tr>
+                <td>レイテンシ p50</td>
+                <td>{{ baseline.summary.latency_p50_ms if baseline else '-' }}ms</td>
+                <td>{{ current.summary.latency_p50_ms }}ms</td>
+                <td class="{{ 'diff-neg' if diffs and diffs.latency_p50_ms > 50 else ('diff-pos' if diffs and diffs.latency_p50_ms < -50 else '') }}">
+                    {{ "%+d"|format(diffs.latency_p50_ms) if diffs else '-' }}ms
+                </td>
+            </tr>
+        </tbody>
+    </table>
+
+    {% if sq_analysis %}
+    <h2>🛠️ Structured Query 分析</h2>
+    <p><i>※ source_name はデータソース識別子であり、検索引用元とは異なります。</i></p>
+    <table>
+        <tr>
+            <th>項目</th>
+            <th>値</th>
+        </tr>
+        <tr>
+            <td>対象件数</td>
+            <td>{{ sq_analysis.total_count }}</td>
+        </tr>
+        <tr>
+            <td>回答生成率</td>
+            <td>{{ "%.1f%%"|format(sq_analysis.response_generated_rate * 100) }}</td>
+        </tr>
+        <tr>
+            <td>品質合格率</td>
+            <td>{{ "%.1f%%"|format(sq_analysis.answer_ok_rate * 100) }}</td>
+        </tr>
+        <tr>
+            <td>Fail-safe (ブロック) 率</td>
+            <td><span class="badge {{ 'badge-warning' if sq_analysis.fail_safe_rate > 0 else 'badge-success' }}">{{ "%.1f%%"|format(sq_analysis.fail_safe_rate * 100) }}</span></td>
+        </tr>
+    </table>
+
+    <div style="display: flex; gap: 20px;">
+        <div style="flex: 1;">
+            <h3>Source Name 分布 (Top {{ top_n }})</h3>
+            <ul>
+            {% for sname, count in sq_analysis.source_counts.items() -%}
+                <li><code>{{ sname }}</code>: {{ count }} 件</li>
+            {% endfor %}
+            </ul>
+        </div>
+        <div style="flex: 1;">
+            <h3>非成功 Reason Code</h3>
+            <ul>
+            {% for code, count in sq_analysis.reason_codes.items() -%}
+                <li><code>{{ code }}</code>: {{ count }} 件</li>
+            {% endfor %}
+            </ul>
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="action-box">
+        <h2>⚠️ 要対応ケース (Action Required) - 計 {{ actionable_cases|length }} 件</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>クエリ</th>
+                    <th>理由</th>
+                    <th>類似度</th>
+                    <th>信頼度</th>
+                    <th>比較</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for case in actionable_cases -%}
+                <tr>
+                    <td>{{ case.query }}</td>
+                    <td>{{ case.reason_brief }}</td>
+                    <td>{{ "%.2f"|format(case.current.similarity) }}</td>
+                    <td>{{ "%.2f"|format(case.current.confidence) }}</td>
+                    <td>{{ case.diff_status }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="footer">
+        Report generated at: {{ timestamp }}<br>
+        Baseline: {{ baseline.metadata.timestamp if baseline else 'N/A' }}
+    </div>
+
+</body>
+</html>

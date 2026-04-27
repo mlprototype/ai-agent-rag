@@ -39,9 +39,9 @@ def test_structured_query_router():
     assert decision5 is not None
     assert decision5.route == "direct_answer"
 
-    # 計算クエリの維持
+    # 計算クエリの縮退判定
     query6 = "1+1は？"
     decision6 = HeuristicRouter.route(query6)
     assert decision6 is not None
-    assert decision6.route == "calculator"
+    assert decision6.route == "direct_answer"
     assert decision6.query_type == "calc"

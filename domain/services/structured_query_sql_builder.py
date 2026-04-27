@@ -19,6 +19,8 @@ def build_structured_sql(intent: StructuredQueryIntent) -> tuple[str, tuple[Any,
     # 1. 基本となる SELECT 文の構築
     if operation == "count":
         sql = f"SELECT count(*) as result FROM {table_name}"
+    elif operation == "list":
+        sql = f"SELECT {metric} FROM {table_name}"
     elif operation == "sum":
         sql = f"SELECT sum({metric}) as result FROM {table_name}"
     elif operation == "avg":

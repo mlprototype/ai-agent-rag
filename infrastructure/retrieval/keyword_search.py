@@ -45,9 +45,15 @@ class KeywordSearch:
         # 1. 疑問形などの不要なサフィックスを除去
         suffixes = ["とはなんですか", "とは何ですか", "って何ですか", "って何", "とは", "について教えて", "について", "ですか", "ますか", "？", "?", "教えて", "詳細"]
         norm = query.strip()
-        for suffix in suffixes:
-            if norm.endswith(suffix):
-                norm = norm[:-len(suffix)].strip()
+        while True:
+            matched = False
+            for suffix in suffixes:
+                if norm.endswith(suffix):
+                    norm = norm[:-len(suffix)].strip()
+                    matched = True
+                    break
+            if not matched:
+                break
         
         # 2. 記号をスペースに置換
         norm = re.sub(r'[^\w\s\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]', ' ', norm)
