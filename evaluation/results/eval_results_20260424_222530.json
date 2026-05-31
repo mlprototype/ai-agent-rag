@@ -1,0 +1,167 @@
+{
+  "metadata": {
+    "timestamp": "2026-04-24T22:25:30.503094",
+    "total_records": 4,
+    "execution_time_ms": 39369
+  },
+  "summary": {
+    "total_count": 4,
+    "response_generated_rate": 1.0,
+    "answer_ok_rate": 0.75,
+    "warning_rate": 0.0,
+    "fallback_rate": 0.75,
+    "degraded_rate": 1.0,
+    "avg_confidence": 0.645,
+    "avg_similarity": 0.75,
+    "latency_p50_ms": 9546.5,
+    "latency_p95_ms": 13316.0
+  },
+  "by_query_type": {
+    "definition": {
+      "total_count": 2,
+      "response_generated_rate": 1.0,
+      "answer_ok_rate": 1.0,
+      "warning_rate": 0.0,
+      "fallback_rate": 1.0,
+      "degraded_rate": 1.0,
+      "avg_confidence": 0.75,
+      "avg_similarity": 1.0,
+      "latency_p50_ms": 4682.0,
+      "latency_p95_ms": 3587.0
+    },
+    "retrieval_complex": {
+      "total_count": 2,
+      "response_generated_rate": 1.0,
+      "answer_ok_rate": 0.5,
+      "warning_rate": 0.0,
+      "fallback_rate": 0.5,
+      "degraded_rate": 1.0,
+      "avg_confidence": 0.54,
+      "avg_similarity": 0.5,
+      "latency_p50_ms": 13347.5,
+      "latency_p95_ms": 13316.0
+    }
+  },
+  "by_route": {
+    "agentic_retrieval": {
+      "total_count": 4,
+      "response_generated_rate": 1.0,
+      "answer_ok_rate": 0.75,
+      "warning_rate": 0.0,
+      "fallback_rate": 0.75,
+      "degraded_rate": 1.0,
+      "avg_confidence": 0.645,
+      "avg_similarity": 0.75,
+      "latency_p50_ms": 9546.5,
+      "latency_p95_ms": 13316.0
+    }
+  },
+  "distributions": {
+    "warning_codes": {},
+    "fallback_level": {
+      "LEVEL_2": 2,
+      "LEVEL_1": 1,
+      "NONE": 1
+    },
+    "retrieval_quality_level": {
+      "high": 4
+    },
+    "reason_code": {
+      "SUCCESS": 4
+    }
+  },
+  "records": [
+    {
+      "query": "RAGとは何ですか？",
+      "query_type": "definition",
+      "route": "agentic_retrieval",
+      "answer": "RAG（Retrieval-Augmented Generation）とは、回答を生成する前に外部ナレッジベースから関連情報を取得することで、大規模言語モデルを強化する手法です[1]。",
+      "confidence": 0.7,
+      "fallback_level": "LEVEL_2",
+      "latency_ms": 5777,
+      "retrieval_quality_level": "high",
+      "source_name": null,
+      "similarity": 1.0,
+      "reason_code": "SUCCESS",
+      "response_generated": true,
+      "answer_ok": true,
+      "degraded": true,
+      "critic_degraded": true,
+      "retrieval_degraded": true,
+      "strict_insufficient_response": false,
+      "warning": false,
+      "warning_codes": [],
+      "expected_query_type": null,
+      "expected_route": null
+    },
+    {
+      "query": "pgvectorとは何ですか？",
+      "query_type": "definition",
+      "route": "agentic_retrieval",
+      "answer": "pgvectorはPostgreSQL用のオープンソースのベクトル類似性検索です。完全一致および近似最近傍探索をサポートしています[1]。",
+      "confidence": 0.8,
+      "fallback_level": "LEVEL_2",
+      "latency_ms": 3587,
+      "retrieval_quality_level": "high",
+      "source_name": null,
+      "similarity": 1.0,
+      "reason_code": "SUCCESS",
+      "response_generated": true,
+      "answer_ok": true,
+      "degraded": true,
+      "critic_degraded": true,
+      "retrieval_degraded": true,
+      "strict_insufficient_response": false,
+      "warning": false,
+      "warning_codes": [],
+      "expected_query_type": null,
+      "expected_route": null
+    },
+    {
+      "query": "LangGraphは何に使われますか？",
+      "query_type": "retrieval_complex",
+      "route": "agentic_retrieval",
+      "answer": "LangGraphは、LLMを使用してステートフルなマルチアクターアプリケーションを構築するためのライブラリです。また、エージェンティックなワークフローのための循環グラフを作成することができます[1]。",
+      "confidence": 0.74,
+      "fallback_level": "LEVEL_1",
+      "latency_ms": 13316,
+      "retrieval_quality_level": "high",
+      "source_name": null,
+      "similarity": 1.0,
+      "reason_code": "SUCCESS",
+      "response_generated": true,
+      "answer_ok": true,
+      "degraded": true,
+      "critic_degraded": false,
+      "retrieval_degraded": true,
+      "strict_insufficient_response": false,
+      "warning": false,
+      "warning_codes": [],
+      "expected_query_type": null,
+      "expected_route": null
+    },
+    {
+      "query": "FastAPIについて教えてください。",
+      "query_type": "retrieval_complex",
+      "route": "agentic_retrieval",
+      "answer": "検索結果に十分な情報が見つかりませんでした。",
+      "confidence": 0.34,
+      "fallback_level": "NONE",
+      "latency_ms": 13379,
+      "retrieval_quality_level": "high",
+      "source_name": null,
+      "similarity": 0.0,
+      "reason_code": "SUCCESS",
+      "response_generated": true,
+      "answer_ok": false,
+      "degraded": true,
+      "critic_degraded": false,
+      "retrieval_degraded": true,
+      "strict_insufficient_response": false,
+      "warning": false,
+      "warning_codes": [],
+      "expected_query_type": null,
+      "expected_route": null
+    }
+  ]
+}

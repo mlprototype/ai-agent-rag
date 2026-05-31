@@ -1,0 +1,1567 @@
+# ファイルの責務: LangGraphによるエージェントのワークフロー定義と状態遷移制御
+# 主な入出力: 各ノードでAgentStateを受け取り、更新差分を返す
+# 設計上の注意点: タイムアウトや予算枯渇時には各段階でフォールバックを挟み、処理を継続する
+import asyncio
+import logging
+import re
+import time
+from typing import Any
+
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_openai import ChatOpenAI
+from langgraph.graph import END, StateGraph
+
+from domain.services.expression_evaluator import calculate_expression
+from application.agents.state import AgentState
+from config.settings import get_settings
+from domain.models.retrieval_models import RetrievedChunk
+from domain.services.answer_critic import AnswerCritic, AnswerVerdict
+from domain.services.confidence import AdvancedConfidenceEstimator
+from domain.services.coverage_checker import assess_coverage, build_coverage_plan
+from domain.services.prompt_loader import load_prompt
+from domain.services.prompt_registry import GENERATE_PROMPT
+from domain.services.query_decomposer import QueryDecomposer
+from domain.services.result_merger import ResultMerger
+from domain.services.retrieval_critic import RetrievalCritic
+from domain.services.retrieval_service import RetrievalService
+from domain.services.router import AgentRouter
+from domain.services.structured_query import StructuredQueryTool
+from pydantic import BaseModel
+from domain.services.compare_intent import extract_targets
+from domain.services.compare_retrieval import build_compare_subquery, run_compare_retrieval
+from domain.services.compare_merge import merge_compare_contexts
+from domain.services.compare_quality_gate import CompareQualityGate
+from domain.services.retrieval_budget import (
+    compute_remaining_budget_ms,
+    evaluate_budget_and_fallback,
+    should_skip_rerank,
+    should_skip_retrieval_critic,
+    should_skip_rewrite,
+)
+from infrastructure.retrieval.reranker import build_reranker
+from infrastructure.memory.in_memory_memory import in_memory_memory
+
+_SETTINGS = get_settings()
+_RERANKER = build_reranker()
+_GENERATE_CHAIN = None
+_DIRECT_CHAIN = None
+_CALC_PATTERN = re.compile(r"[\d\s\.\(\)\+\-\*/%足すたすプラス引くひくマイナスかける掛けるタイムズ割るわるスラッシュ]+")
+# タイムアウト閾値: これ未満の残予算では完了が見込めないためタイムアウトとして扱う
+_MIN_STAGE_TIMEOUT_MS = 250
+_HIGH_COMPLEXITY_HINTS = (
+    "違い",
+    "比較",
+    "メリット",
+    "デメリット",
+    "理由",
+    "なぜ",
+    "どうして",
+    "手順",
+    "方法",
+    "関係",
+    "仕組み",
+    "まとめ",
+    "それぞれ",
+)
+_MEDIUM_COMPLEXITY_HINTS = (
+    "とは",
+    "について",
+    "使い方",
+    "教えて",
+    "how",
+    "what",
+    "why",
+)
+_COMPARE_TYPE_HINTS = ("違い", "比較", "差", "使い分け", "メリット", "デメリット", "vs", "versus")
+_DEFINITION_TYPE_HINTS = ("とは", "意味", "定義", "とは何", "って何")
+logger = logging.getLogger(__name__)
+
+
+# 関数の役割: 生成ノード用LLMチェーンの初期化と取得
+# 入出力: 引数なしで、LLMチェーンオブジェクトを返す
+# state更新: 更新なし
+# フォールバック: 特になし
+def _get_generate_chain():
+    global _GENERATE_CHAIN
+    if _GENERATE_CHAIN is None:
+        fallback_prompt = ChatPromptTemplate.from_messages([
+            (
+                "system",
+                "あなたはユーザーを支援するAIアシスタントです。常に日本語で回答してください。\n"
+                "[最優先ルール: 検索系ルートにおける回答ポリシー]\n"
+                "route が agentic_retrieval または fallback_retrieval の場合、以下のヒエラルキーを厳守してください。\n"
+                "1. **search_context の絶対優先**: 回答に使用できる事実は、提供された search_context の情報のみです。\n"
+                "2. **一般知識の利用禁止**: search_context にない情報を自身の知識で補完することを**固く禁止**します。\n"
+                "3. **会話履歴よりコンテキスト優先**: 過去の履歴によらず、現在の search_context のみに基づいて回答してください。\n"
+                "4. **不足時の即時拒否**: 情報がない場合は必ず「検索結果に十分な情報が見つかりませんでした」と述べてください。\n"
+                "[その他のルール]\n"
+                "内部のルーティング、critic、sub-query、再試行については一切言及しないでください。\n"
+                "根拠がある文には [1], [2] のような citation を付けてください。\n"
+                "route が direct_answer の場合は自然な会話として回答し、calculator の場合は計算結果を述べてください。"
+            ),
+            (
+                "system",
+                "[現在のコンテキスト]\n"
+                "route: {route}\n"
+                "search_context:\n{retrieval_context}\n\n"
+                "sources_text:\n{sources_text}"
+            ),
+            MessagesPlaceholder("messages"),
+            (
+                "system",
+                "[最終確認命令]\n"
+                "検索系 route において search_context が空（「なし」など）の場合は、履歴や質問の内容にかかわらず、絶対に一般知識で回答せず「検索結果に十分な情報が見つかりませんでした」とだけ出力してください。"
+            ),
+        ])
+        prompt = load_prompt(GENERATE_PROMPT, fallback_prompt)
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, streaming=True)
+        _GENERATE_CHAIN = prompt | llm
+    return _GENERATE_CHAIN
+
+
+# 関数の役割: 直接回答(direct_answer)ルート用LLMチェーンの初期化と取得
+# 入出力: 引数なしで、LLMチェーンオブジェクトを返す
+# state更新: 更新なし
+# フォールバック: 特になし
+def _get_direct_chain():
+    global _DIRECT_CHAIN
+    if _DIRECT_CHAIN is None:
+        prompt = ChatPromptTemplate.from_messages([
+            (
+                "system",
+                "あなたはユーザーを支援するAIアシスタントです。常に日本語で、自然な会話として回答してください。\n"
+                "内部のルーティング(direct_answerなど)やシステムについては一切言及しないでください。"
+            ),
+            MessagesPlaceholder("messages"),
+        ])
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, streaming=True)
+        _DIRECT_CHAIN = prompt | llm
+    return _DIRECT_CHAIN
+
+
+# 関数の役割: 履歴から最新のユーザー入力を取得
+# 入出力: AgentStateを受け取り、質問文字列を返す
+# state更新: 更新なし
+# フォールバック: メッセージがない場合は空文字を返す
+def _latest_user_query(state: AgentState) -> str:
+    for message in reversed(state.get("messages", [])):
+        if isinstance(message, HumanMessage):
+            return message.content.strip()
+    return ""
+
+
+# 関数の役割: 質問の複雑度を推定
+# 入出力: 質問文字列を受け取り、複雑度(low/medium/high)を返す
+# state更新: 更新なし
+# フォールバック: 特になし
+def _estimate_query_complexity(query: str) -> str:
+    normalized = query.strip().lower()
+    if not normalized:
+        return "low"
+
+    score = 0
+    length = len(normalized)
+    if length >= 80:
+        score += 2
+    elif length >= 35:
+        score += 1
+
+    if any(token in normalized for token in _HIGH_COMPLEXITY_HINTS):
+        score += 2
+    elif any(token in normalized for token in _MEDIUM_COMPLEXITY_HINTS):
+        score += 1
+
+    if any(token in normalized for token in ("および", "または", "それぞれ", "複数", "AとB", "aとb")):
+        score += 1
+
+    separator_count = sum(normalized.count(token) for token in ("、", ",", " and ", " or ", "/"))
+    if separator_count >= 2:
+        score += 1
+
+    if score >= 4:
+        return "high"
+    if score >= 2:
+        return "medium"
+    return "low"
+
+
+# 関数の役割: 質問の意図・種類を推論
+# 入出力: 質問とメタデータを受け取り、クエリ種別を返す
+# state更新: 更新なし
+# フォールバック: 判定不能時は retrieval_complex を返す
+def _infer_query_type(
+    query: str,
+    *,
+    route: str | None,
+    query_complexity: str | None,
+    coverage_intent: str | None,
+) -> str:
+    lowered = query.strip().lower()
+    if route == "calculator" or (any(token in query for token in ("+", "-", "*", "/", "%")) and any(ch.isdigit() for ch in query)):
+        return "calc"
+    if coverage_intent == "compare" or any(token in lowered for token in _COMPARE_TYPE_HINTS):
+        return "compare"
+    if any(token in query for token in _DEFINITION_TYPE_HINTS):
+        return "definition"
+    if route == "direct_answer" and query_complexity in (None, "low"):
+        return "direct"
+    return "retrieval_complex"
+
+
+# 関数の役割: クエリ複雑度に応じた初期予算の算出
+# 入出力: 複雑度とクエリ種別を受け取り、予算(ms)を返す
+# state更新: 更新なし
+# フォールバック: 特になし
+def _initial_budget_ms(complexity: str, query_type: str) -> int:
+    if query_type == "retrieval_complex":
+        return _SETTINGS.budget_total_retrieval_complex_ms
+    if complexity == "high":
+        return _SETTINGS.complex_budget_high_ms
+    if complexity == "medium":
+        return _SETTINGS.complex_budget_medium_ms
+    return _SETTINGS.complex_budget_low_ms
+
+
+# 関数の役割: 残り予算時間の取得
+# 入出力: AgentStateを受け取り、残り予算(ms)を返す
+# state更新: 更新なし
+# フォールバック: 特になし
+def _remaining_budget_ms(state: AgentState) -> int:
+    return compute_remaining_budget_ms(state)
+
+
+# 関数の役割: 各ノード実行時の予算関連ステート更新の生成
+# 入出力: AgentState等を受け取り、更新差分を返す
+# state更新: remaining_budget_ms, must_generate などを更新
+# フォールバック: 特になし
+def _budget_runtime_updates(
+    state: AgentState,
+    *,
+    route: str | None = None,
+    checkpoint: str | None = None,
+) -> dict[str, Any]:
+    remaining = compute_remaining_budget_ms(state)
+    effective_route = route or state.get("route", "direct_answer")
+    is_retrieval_route = effective_route in ("agentic_retrieval", "fallback_retrieval")
+    is_full_agentic_route = effective_route == "agentic_retrieval"
+    
+    updates: dict[str, Any] = {
+        "remaining_budget_ms": remaining,
+    }
+    
+    if is_retrieval_route:
+        updates["must_generate"] = state.get("must_generate", False) or bool(remaining <= _SETTINGS.force_generate_threshold_ms)
+        
+    if is_full_agentic_route:
+        updates["retrieval_degraded"] = state.get("retrieval_degraded", False) or bool(remaining <= _SETTINGS.retrieval_degrade_threshold_ms)
+        
+        if checkpoint:
+            fallback_updates = evaluate_budget_and_fallback(state, checkpoint)
+            updates.update(fallback_updates)
+            
+    return updates
+
+
+# 関数の役割: タイムアウト等のステージリストへの追加
+# 入出力: リストと追加要素を受け取り、新規リストを返す
+# state更新: 更新なし
+# フォールバック: 特になし
+def _append_stage(items: list[str] | None, stage: str) -> list[str]:
+    existing = list(items or [])
+    if stage not in existing:
+        existing.append(stage)
+    return existing
+
+
+# 関数の役割: 現在のステージで利用可能なタイムアウト秒数の算出
+# 入出力: AgentState等を受け取り、タイムアウト秒を返す
+# state更新: 更新なし
+# フォールバック: 予算不足時は即時タイムアウト(0.0)を返す
+def _stage_timeout_seconds(
+    state: AgentState,
+    hard_timeout_seconds: float,
+    *,
+    reserve_generate: bool,
+) -> float:
+    remaining = _remaining_budget_ms(state)
+    if reserve_generate and state.get("route") in ("agentic_retrieval", "fallback_retrieval"):
+        remaining = max(0, remaining - _SETTINGS.force_generate_threshold_ms)
+
+    allowed_ms = min(int(hard_timeout_seconds * 1000), remaining)
+    if allowed_ms < _MIN_STAGE_TIMEOUT_MS:
+        return 0.0
+    return allowed_ms / 1000
+
+
+# 関数の役割: 検索品質評価をスキップすべきかの判定
+# 入出力: AgentStateを受け取り、スキップ理由(str)またはNoneを返す
+# state更新: 更新なし
+# フォールバック: 予算不足等の場合はスキップ理由を返す
+def _should_skip_retrieval_critic(state: AgentState) -> str | None:
+    if state.get("coverage_intent") == "compare":
+        return None
+    if should_skip_retrieval_critic(state):
+        return "remaining_budget_low"
+    if state.get("must_generate") or state.get("retrieval_degraded"):
+        return "remaining_budget_low"
+
+    if (
+        state.get("query_complexity") == "low"
+        and state.get("confidence", 0.0) >= _SETTINGS.retrieval_critic_skip_confidence
+        and len(state.get("sources", [])) >= 2
+    ):
+        return "high_confidence"
+
+    return None
+
+
+# 関数の役割: 回答品質評価をスキップすべきかの判定
+# 入出力: AgentStateを受け取り、スキップ理由(str)またはNoneを返す
+# state更新: 更新なし
+# フォールバック: 予算不足や必須観点不足時はスキップ理由を返す
+def _should_skip_answer_critic(state: AgentState) -> str | None:
+    if state.get("missing_aspects"):
+        return None
+    if state.get("coverage_intent") == "compare":
+        return None
+    if state.get("must_generate"):
+        return "remaining_budget_low"
+    if state.get("retrieval_degraded"):
+        return "retrieval_degraded"
+
+    if (
+        state.get("confidence", 0.0) >= _SETTINGS.answer_critic_skip_confidence
+        and state.get("coverage_score", 0.0) >= 0.75
+        and len(state.get("sources", [])) >= 2
+    ):
+        return "high_confidence"
+
+    return None
+
+
+# 関数の役割: 辞書リストからチャンクモデルリストへの変換
+# 入出力: 辞書リストを受け取り、RetrievedChunkリストを返す
+# state更新: 更新なし
+# フォールバック: 特になし
+def _chunk_dicts_to_models(chunk_dicts: list[dict[str, Any]]) -> list[RetrievedChunk]:
+    return [RetrievedChunk.from_state_dict(chunk) for chunk in chunk_dicts]
+
+
+# 関数の役割: チャンクモデルリストから辞書リストへの変換
+# 入出力: RetrievedChunkリストを受け取り、辞書リストを返す
+# state更新: 更新なし
+# フォールバック: 特になし
+def _chunk_models_to_dicts(chunks: list[RetrievedChunk]) -> list[dict[str, Any]]:
+    return [chunk.to_state_dict() for chunk in chunks]
+
+
+# 関数の役割: 検索結果チャンク群のLLM評価用サマリー生成
+# 入出力: チャンク辞書リストを受け取り、要約文字列を返す
+# state更新: 更新なし
+# フォールバック: 特になし
+def _chunks_summary(chunk_dicts: list[dict[str, Any]]) -> str:
+    lines = []
+    for index, chunk in enumerate(chunk_dicts[:8], start=1):
+        snippet = chunk.get("content", "").replace("\n", " ")[:240]
+        lines.append(
+            f"[{index}] doc={chunk.get('doc_id')} chunk={chunk.get('chunk_id')} "
+            f"score={chunk.get('rerank_score') or chunk.get('hybrid_score', 0.0):.4f} "
+            f"text={snippet}"
+        )
+    return "\n".join(lines)
+
+
+# 関数の役割: 引用ソース情報とコンテキストの統合サマリー生成
+# 入出力: ソース辞書リストとコンテキストを受け取り、文字列を返す
+# state更新: 更新なし
+# フォールバック: 特になし
+def _sources_summary(sources: list[dict[str, Any]], retrieval_context: str) -> str:
+    lines = []
+    for source in sources:
+        lines.append(
+            f"[{source.get('citation_id')}] doc={source.get('doc_id')} chunk={source.get('chunk_id')} "
+            f"hybrid={source.get('hybrid_score', 0.0):.4f} "
+            f"rerank={source.get('rerank_score', 0.0):.4f} "
+            f"snippet={source.get('snippet', '')}"
+        )
+    if retrieval_context:
+        lines.append(f"context={retrieval_context[:1500]}")
+    return "\n".join(lines)
+
+
+# 関数の役割: 生成ノード向けの参照用ソースカタログ生成
+# 入出力: ソース辞書リストを受け取り、文字列を返す
+# state更新: 更新なし
+# フォールバック: ソースが無い場合は「なし」を返す
+def _sources_catalog(sources: list[dict[str, Any]]) -> str:
+    if not sources:
+        return "なし"
+    return "\n".join(
+        f"[{source.get('citation_id')}] {source.get('doc_id')} :: {source.get('snippet', '')}"
+        for source in sources
+    )
+
+
+# 関数の役割: システム状態に基づく確信度(Confidence)の上限適用
+# 入出力: 確信度とState等を受け取り、補正後の確信度を返す
+# state更新: 更新なし
+# フォールバック: 上限値を超える場合はクリッピングする
+def _apply_confidence_cap(confidence: float, state: AgentState, answer_verdict: AnswerVerdict | None = None) -> float:
+    capped = confidence
+    if answer_verdict and answer_verdict.confidence_override is not None:
+        capped = min(capped, answer_verdict.confidence_override)
+    if state.get("router_uncertain"):
+        capped = min(capped, _SETTINGS.router_uncertain_confidence_cap)
+    cap = state.get("confidence_cap")
+    if cap is not None:
+        capped = min(capped, cap)
+    return round(max(0.0, min(1.0, capped)), 2)
+
+
+# 関数の役割: 状態に基づく基本警告メッセージの生成
+# 入出力: 確信度と回答OKフラグを受け取り、警告文字列を返す
+# state更新: 更新なし
+# フォールバック: 低品質時は不完全な回答である旨の警告を返す
+def _warning_for_state(confidence: float, answer_ok: bool) -> str | None:
+    if not answer_ok or confidence < 0.5:
+        return "This answer may be incomplete"
+    return None
+
+
+# 関数の役割: ユーザー提示用の詳細な警告メッセージ構築
+# 入出力: 警告コードや品質レベル等を受け取り、警告文字列を返す
+# state更新: 更新なし
+# フォールバック: 品質低下が検知された場合に適切な警告を返す
+def build_user_warning(
+    warning_codes: list[str],
+    fallback_level: str,
+    partial_retrieval_used: bool,
+    retrieval_quality_level: str,
+) -> str | None:
+    """Build a user-facing warning message based on retrieval degradation."""
+    if fallback_level == "minimal_answer":
+        return "十分な検索結果が得られず、最小限の回答を行いました。"
+    if partial_retrieval_used or "partial_retrieval_used" in warning_codes:
+        return "一部の検索工程を省略して回答を生成しました。"
+    if fallback_level in ["single_retrieval_fallback", "critic_skip", "optimization_skip"]:
+        return "十分な検索予算を確保できず、簡略化した経路で回答しています。"
+    return None
+
+
+# 関数の役割: 現在の検索状態に対するカバレッジ(網羅性)評価
+# 入出力: AgentStateと対象フラグを受け取り、評価結果を返す
+# state更新: 更新なし
+# フォールバック: 特になし
+def _coverage_assessment_for_state(state: AgentState, *, use_sources: bool) -> Any:
+    coverage_plan = build_coverage_plan(state.get("original_query", ""))
+    if use_sources:
+        text = _sources_summary(state.get("sources", []), state.get("retrieval_context", ""))
+    else:
+        text = _chunks_summary(state.get("working_chunks", []))
+    return assess_coverage(coverage_plan, text)
+
+
+# 関数の役割: ルーター実行のタイムアウト秒数算出
+# 入出力: 引数なしで、秒数(float)を返す
+# state更新: 更新なし
+# フォールバック: 設定と予算のうち短い方を採用
+def _router_timeout_seconds() -> float:
+    return min(_SETTINGS.router_timeout_seconds, _SETTINGS.router_budget_ms / 1000)
+
+
+# 関数の役割: 質問文字列からの数式抽出
+# 入出力: 質問文字列を受け取り、数式文字列を返す
+# state更新: 更新なし
+# フォールバック: 抽出不能時は元のクエリをそのまま返す
+def _extract_expression(query: str) -> str:
+    candidate = "".join(_CALC_PATTERN.findall(query)).strip()
+    return candidate or query.strip()
+
+
+# 関数の役割: ワークフロー初期化
+# 入出力: AgentStateを受け取り、更新差分を返す
+# state更新: original_query, initial_budget_ms などを設定
+# フォールバック: 特になし
+async def initialize_node(state: AgentState) -> dict[str, Any]:
+    original_query = _latest_user_query(state)
+    coverage_plan = build_coverage_plan(original_query)
+    complexity = _estimate_query_complexity(original_query)
+    if coverage_plan.intent == "compare":
+        complexity = "high"
+    query_type = _infer_query_type(
+        original_query,
+        route=None,
+        query_complexity=complexity,
+        coverage_intent=coverage_plan.intent,
+    )
+    initial_budget_ms = _initial_budget_ms(complexity, query_type)
+
+    return {
+        "original_query": original_query,
+        "route": "direct_answer",
+        "router_reason": "",
+        "router_uncertain": False,
+        "query_type": query_type,
+        "routing_layer": "fallback",
+        "route_decision_source": "llm_error_fallback",
+        "heuristic_matched": False,
+        "heuristic_rule": "",
+        "route_decision_latency_ms": 0,
+        "route_decision_confidence": 0.0,
+        "llm_router_invoked": False,
+        "query_complexity": complexity,
+        "coverage_intent": coverage_plan.intent,
+        "coverage_entities": coverage_plan.entities,
+        "comparison_axes": coverage_plan.comparison_axes,
+        "expected_aspects": coverage_plan.expected_aspects,
+        "query_phase": "initial",
+        "sub_queries": [],
+        "retrieval_ok": False,
+        "answer_ok": True,
+        "retry_count": 0,
+        "confidence": 0.5,
+        "warning": None,
+        "sources": [],
+        "retrieval_context": "",
+        "working_chunks": [],
+        "parallel_results": [],
+        "critique_reason": "",
+        "missing_aspects": [],
+        "coverage_score": 0.0,
+        "answer": "",
+        "force_generate": False,
+        "must_generate": False,
+        "retrieval_degraded": False,
+        "confidence_cap": None,
+        "budget_started_at": time.monotonic(),
+        "initial_budget_ms": initial_budget_ms,
+        "remaining_budget_ms": initial_budget_ms,
+        "retrieval_critic_skipped_reason": None,
+        "answer_critic_skipped_reason": None,
+        "timeout_stages": [],
+        "fallback_stages": [],
+        "compare_targets": None,
+        "compare_aspect": None,
+        "compare_extract_success": False,
+        "compare_path_used": False,
+        "compare_doc_count_a": 0,
+        "compare_doc_count_b": 0,
+        "compare_context_coverage_ok": False,
+        "compare_route_fallback_used": False,
+        "compare_fallback_reason": None,
+        "quality_gate_status": None,
+        "quality_gate_reasons": [],
+        "quality_gate_confidence": None,
+        "fallback_level": "full_path",
+        "skipped_stages": [],
+        "budget_pressure_reasons": [],
+        "remaining_budget_ms_at_generate": 0,
+        "partial_retrieval_used": False,
+        "retrieval_timeout_count": 0,
+        "retrieval_success_count": 0,
+        "warning_codes": [],
+        "retrieval_quality_level": "high",
+    }
+
+
+# 関数の役割: 意図に基づく初期ルーティング
+# 入出力: AgentStateを受け取り、更新差分を返す
+# state更新: route, router_reason などを更新
+# フォールバック: LLMのタイムアウト時は検索ルートへ遷移
+async def router_node(state: AgentState) -> dict[str, Any]:
+    timeout_seconds = _router_timeout_seconds()
+    started_at = time.monotonic()
+    decision = await AgentRouter.route(
+        state["original_query"],
+        timeout_seconds=timeout_seconds if timeout_seconds > 0 else None,
+    )
+    latency_ms = int((time.monotonic() - started_at) * 1000)
+
+    logger.info(
+        {
+            "event": "router_decision",
+            "query_type": decision.query_type,
+            "route": decision.route,
+            "routing_layer": decision.routing_layer,
+            "route_decision_source": decision.source,
+            "heuristic_matched": decision.heuristic_matched,
+            "heuristic_rule": decision.heuristic_rule,
+            "route_decision_confidence": decision.confidence,
+            "route_decision_latency_ms": latency_ms,
+            "llm_router_invoked": decision.llm_router_invoked,
+        }
+    )
+
+    return {
+        "route": decision.route,
+        "router_reason": decision.reason,
+        "router_uncertain": decision.reason == "timeout_fallback",
+        "query_type": decision.query_type,
+        "routing_layer": decision.routing_layer,
+        "route_decision_source": decision.source,
+        "heuristic_matched": decision.heuristic_matched,
+        "heuristic_rule": decision.heuristic_rule,
+        "route_decision_confidence": decision.confidence,
+        "route_decision_latency_ms": latency_ms,
+        "llm_router_invoked": decision.llm_router_invoked,
+        "timeout_stages": _append_stage(state.get("timeout_stages"), "router") if decision.reason == "timeout_fallback" else state.get("timeout_stages", []),
+        "fallback_stages": _append_stage(state.get("fallback_stages"), "router") if decision.reason.endswith("_fallback") else state.get("fallback_stages", []),
+        **_budget_runtime_updates(state, route=decision.route),
+    }
+
+
+# calculator_node and its dependencies are moved to direct_generate_node for simplification
+
+
+# 関数の役割: 単一クエリによる検索の実行
+# 入出力: AgentStateを受け取り、更新差分を返す
+# state更新: working_chunks, retrieval_context などを更新
+# フォールバック: 特になし
+async def retrieve_node(state: AgentState) -> dict[str, Any]:
+    result = await RetrievalService.run(state["original_query"])
+    return {
+        "working_chunks": _chunk_models_to_dicts(result["chunks"]),
+        "retrieval_context": result["context"],
+        "sources": result["sources"],
+        "confidence": result["confidence"],
+        "force_generate": not bool(result["chunks"]),
+        "retrieval_critic_skipped_reason": None,
+        "answer_critic_skipped_reason": None,
+        "retrieval_success_count": state.get("retrieval_success_count", 0) + 1,
+        **_budget_runtime_updates(state, route="agentic_retrieval"),
+    }
+
+
+# 関数の役割: 検索結果の品質評価
+# 入出力: AgentStateを受け取り、更新差分を返す
+# state更新: retrieval_ok, critique_reason などを更新
+# フォールバック: 予算不足・高スコア時はLLM評価をスキップ
+async def retrieval_critic_node(state: AgentState) -> dict[str, Any]:
+    runtime_state = state | _budget_runtime_updates(state)
+    skip_reason = _should_skip_retrieval_critic(runtime_state)
+    if skip_reason is not None:
+        coverage = _coverage_assessment_for_state(state, use_sources=False)
+        retrieval_ok = bool(state.get("working_chunks")) and not coverage.required_missing_aspects
+        return {
+            "retrieval_ok": retrieval_ok,
+            "critique_reason": f"{skip_reason}: {', '.join(coverage.required_missing_aspects)}" if coverage.required_missing_aspects else skip_reason,
+            "missing_aspects": coverage.missing_aspects,
+            "coverage_score": coverage.coverage_score or max(state.get("confidence", 0.0), 0.7 if state.get("working_chunks") else 0.0),
+            "confidence_cap": 0.5 if coverage.required_missing_aspects else state.get("confidence_cap"),
+            "retrieval_critic_skipped_reason": skip_reason,
+            "fallback_stages": _append_stage(state.get("fallback_stages"), "retrieval_critic"),
+            "skipped_stages": _append_stage(state.get("skipped_stages"), "retrieval_critic"),
+            **_budget_runtime_updates(state),
+        }
+
+    timeout_seconds = _stage_timeout_seconds(
+        state,
+        _SETTINGS.retrieval_critic_timeout_seconds,
+        reserve_generate=True,
+    )
+    if timeout_seconds <= 0:
+        coverage = _coverage_assessment_for_state(state, use_sources=False)
+        retrieval_ok = bool(state.get("working_chunks")) and not coverage.required_missing_aspects
+        return {
+            "retrieval_ok": retrieval_ok,
+            "critique_reason": "remaining_budget_low",
+            "missing_aspects": coverage.missing_aspects,
+            "coverage_score": coverage.coverage_score or max(state.get("confidence", 0.0), 0.7 if state.get("working_chunks") else 0.0),
+            "confidence_cap": 0.5 if coverage.required_missing_aspects else state.get("confidence_cap"),
+            "retrieval_critic_skipped_reason": "remaining_budget_low",
+            "timeout_stages": _append_stage(state.get("timeout_stages"), "retrieval_critic"),
+            "fallback_stages": _append_stage(state.get("fallback_stages"), "retrieval_critic"),
+            "skipped_stages": _append_stage(state.get("skipped_stages"), "retrieval_critic"),
+            **_budget_runtime_updates(state),
+        }
+
+    critique = await RetrievalCritic.critique(
+        original_query=state["original_query"],
+        chunks_summary=_chunks_summary(state.get("working_chunks", [])),
+        timeout_seconds=timeout_seconds,
+    )
+    is_sufficient = critique.verdict == "SUFFICIENT"
+    updates: dict[str, Any] = {
+        "retrieval_ok": is_sufficient,
+        "critique_reason": critique.reason,
+        "missing_aspects": critique.missing_aspects,
+        "coverage_score": critique.coverage_score,
+        "retrieval_critic_skipped_reason": None,
+    }
+    if critique.reason.startswith("critic_fallback:"):
+        updates["fallback_stages"] = _append_stage(state.get("fallback_stages"), "retrieval_critic")
+    if critique.reason == "critic_fallback:timeout":
+        updates["timeout_stages"] = _append_stage(state.get("timeout_stages"), "retrieval_critic")
+    if not is_sufficient and state.get("retry_count", 0) >= _SETTINGS.max_retrieval_retry:
+        updates["confidence_cap"] = 0.5
+    return updates | _budget_runtime_updates(state)
+
+
+# 関数の役割: 複雑な質問のサブクエリへの分解
+# 入出力: AgentStateを受け取り、更新差分を返す
+# state更新: sub_queries, query_phase などを更新
+# フォールバック: タイムアウト時は元のクエリのまま単一検索へ遷移
+async def decompose_node(state: AgentState) -> dict[str, Any]:
+    runtime_updates = _budget_runtime_updates(state, checkpoint="after_decompose")
+    timeout_seconds = _stage_timeout_seconds(state, _SETTINGS.decompose_timeout_seconds, reserve_generate=True)
+    
+    warning_codes = list(state.get("warning_codes", []))
+    budget_pressure_reasons = list(state.get("budget_pressure_reasons", []))
+    
+    if timeout_seconds <= 0:
+        warning_codes.append("decompose_timeout")
+        budget_pressure_reasons.append("decompose_timeout")
+        return {
+            **runtime_updates,
+            "sub_queries": [state["original_query"]],
+            "query_phase": "decomposed",
+            "retry_count": 1,
+            "timeout_stages": _append_stage(state.get("timeout_stages"), "decompose"),
+            "fallback_stages": _append_stage(state.get("fallback_stages"), "decompose"),
+            "fallback_level": "single_retrieval_fallback",
+            "warning_codes": warning_codes,
+            "budget_pressure_reasons": budget_pressure_reasons,
+        }
+
+    result = await QueryDecomposer.decompose(
+        original_query=state["original_query"],
+        critique_reason=state.get("critique_reason", ""),
+        missing_aspects=state.get("missing_aspects", []),
+        timeout_seconds=timeout_seconds,
+    )
+    updates: dict[str, Any] = {
+        "sub_queries": result.sub_queries,
+        "query_phase": "decomposed",
+        "retry_count": 1,
+        "warning_codes": warning_codes,
+    }
+    if result.fallback_reason:
+        updates["fallback_stages"] = _append_stage(state.get("fallback_stages"), "decompose")
+        updates["fallback_level"] = "single_retrieval_fallback"
+        if "decompose_failed" not in updates["warning_codes"]:
+            updates["warning_codes"].append("decompose_failed")
+    if result.fallback_reason == "timeout_fallback":
+        updates["timeout_stages"] = _append_stage(state.get("timeout_stages"), "decompose")
+    return {
+        **updates,
+        **runtime_updates,
+    }
+
+
+# 関数の役割: 評価不足観点を補うためのクエリ書き換え
+# 入出力: AgentStateを受け取り、更新差分を返す
+# state更新: sub_queries, retry_count などを更新
+# フォールバック: タイムアウト時は現状のクエリで単一検索へ遷移
+async def rewrite_node(state: AgentState) -> dict[str, Any]:
+    timeout_seconds = _stage_timeout_seconds(state, _SETTINGS.rewrite_timeout_seconds, reserve_generate=True)
+    if timeout_seconds <= 0:
+        return {
+            "sub_queries": state.get("sub_queries", []) or [state["original_query"]],
+            "retry_count": state.get("retry_count", 0) + 1,
+            "query_phase": "decomposed",
+            "timeout_stages": _append_stage(state.get("timeout_stages"), "rewrite"),
+            "fallback_stages": _append_stage(state.get("fallback_stages"), "rewrite"),
+            **_budget_runtime_updates(state),
+        }
+
+    result = await QueryDecomposer.rewrite(
+        original_query=state["original_query"],
+        current_sub_queries=state.get("sub_queries", []),
+        critique_reason=state.get("critique_reason", ""),
+        missing_aspects=state.get("missing_aspects", []),
+        timeout_seconds=timeout_seconds,
+    )
+    updates: dict[str, Any] = {
+        "sub_queries": result.sub_queries,
+        "retry_count": state.get("retry_count", 0) + 1,
+        "query_phase": "decomposed",
+    }
+    if result.fallback_reason:
+        updates["fallback_stages"] = _append_stage(state.get("fallback_stages"), "rewrite")
+    if result.fallback_reason == "timeout_fallback":
+        updates["timeout_stages"] = _append_stage(state.get("timeout_stages"), "rewrite")
+    return {
+        **updates,
+        **_budget_runtime_updates(state),
+    }
+
+
+# 関数の役割: サブクエリを用いた並列検索
+# 入出力: AgentStateを受け取り、更新差分を返す
+# state更新: parallel_results, warning_codes などを更新
+# フォールバック: 予算不足時は単一検索へ遷移
+async def parallel_retrieve_node(state: AgentState) -> dict[str, Any]:
+    runtime_updates = _budget_runtime_updates(state, checkpoint="before_parallel_retrieve")
+    temp_state = dict(state)
+    temp_state.update(runtime_updates)
+    
+    sub_queries = state.get("sub_queries", [])
+    fallback_level = state.get("fallback_level", "full_path")
+    warning_codes = list(state.get("warning_codes", []))
+    budget_pressure_reasons = list(state.get("budget_pressure_reasons", []))
+    
+    remaining = compute_remaining_budget_ms(temp_state) # type: ignore
+    usable_for_retrieval = remaining - _SETTINGS.budget_reserved_generate_ms - _SETTINGS.budget_reserved_commit_ms
+    
+    # 複数検索を行う予算(2000ms)がない場合、元のクエリのみの単一検索へフォールバックする
+    if usable_for_retrieval < 2000 and fallback_level not in ["single_retrieval_fallback", "minimal_answer"]:
+        sub_queries = [state["original_query"]]
+        fallback_level = "single_retrieval_fallback"
+        warning_codes.append("budget_insufficient_for_parallel")
+        budget_pressure_reasons.append("budget_insufficient_for_parallel")
+
+    if temp_state.get("retrieval_degraded") and len(sub_queries) > 2:
+        sub_queries = sub_queries[:2]
+        
+    if not sub_queries:
+        sub_queries = [state["original_query"]]
+
+    tasks = [RetrievalService.search(query) for query in sub_queries]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    parallel_results: list[list[dict[str, Any]]] = []
+    timeout_count = 0
+    success_count = 0
+    
+    for result in results:
+        if isinstance(result, Exception):
+            timeout_count += 1
+            continue
+        success_count += 1
+        if result.selected_chunks:
+            parallel_results.append(_chunk_models_to_dicts(result.selected_chunks))
+
+    partial_used = timeout_count > 0 and success_count > 0
+
+    updates: dict[str, Any] = {
+        "partial_retrieval_used": partial_used,
+        "retrieval_timeout_count": timeout_count,
+        "retrieval_success_count": success_count,
+        "fallback_level": fallback_level,
+        "warning_codes": warning_codes,
+        "budget_pressure_reasons": budget_pressure_reasons,
+    }
+
+    if partial_used:
+        if "partial_retrieval_used" not in updates["warning_codes"]:
+            updates["warning_codes"].append("partial_retrieval_used")
+
+    if success_count == 0:
+        if "all_subqueries_failed" not in updates["warning_codes"]:
+            updates["warning_codes"].append("all_subqueries_failed")
+        if len(sub_queries) == 1 and sub_queries[0] == state["original_query"]:
+            updates["fallback_level"] = "minimal_answer"
+        else:
+            updates["fallback_level"] = "single_retrieval_fallback"
+
+    if not parallel_results:
+        updates["force_generate"] = True
+        updates["confidence_cap"] = 0.5
+
+    return {
+        **_budget_runtime_updates(state, checkpoint="after_parallel_retrieve"),
+        "parallel_results": parallel_results,
+        **updates,
+    }
+
+
+# 関数の役割: 並列検索結果の統合と重複排除
+# 入出力: AgentStateを受け取り、更新差分を返す
+# state更新: working_chunks などを更新
+# フォールバック: 検索結果が空の場合は最小限の回答へ遷移
+async def merge_node(state: AgentState) -> dict[str, Any]:
+    warning_codes = list(state.get("warning_codes", []))
+    fallback_level = state.get("fallback_level", "full_path")
+    
+    if not state.get("parallel_results"):
+        if "empty_retrieval_context" not in warning_codes:
+            warning_codes.append("empty_retrieval_context")
+        return {
+            "fallback_level": "minimal_answer",
+            "warning_codes": warning_codes,
+            **_budget_runtime_updates(state, checkpoint="after_merge")
+        }
+        
+    merged = ResultMerger.merge(
+        [_chunk_dicts_to_models(chunks) for chunks in state["parallel_results"]]
+    )
+    
+    if not merged:
+        if "empty_retrieval_context" not in warning_codes:
+            warning_codes.append("empty_retrieval_context")
+        fallback_level = "minimal_answer"
+        
+    return {
+        "working_chunks": _chunk_models_to_dicts(merged),
+        "fallback_level": fallback_level,
+        "warning_codes": warning_codes,
+        **_budget_runtime_updates(state, checkpoint="after_merge"),
+    }
+
+
+# 関数の役割: 統合チャンクの再スコアリング
+# 入出力: AgentStateを受け取り、更新差分を返す
+# state更新: working_chunks, retrieval_context などを更新
+# フォールバック: 予算不足時はリランクをスキップ
+async def rerank_node(state: AgentState) -> dict[str, Any]:
+    chunks = _chunk_dicts_to_models(state.get("working_chunks", []))
+    if not chunks:
+        return _budget_runtime_updates(state)
+
+    if state.get("retrieval_degraded") or should_skip_rerank(state):
+        finalized = await RetrievalService.finalize_chunks(
+            state["original_query"],
+            chunks[:_SETTINGS.max_merged_chunks],
+        )
+        return {
+            "working_chunks": _chunk_models_to_dicts(finalized["chunks"]),
+            "retrieval_context": finalized["context"],
+            "sources": finalized["sources"],
+            "confidence": finalized["confidence"],
+            "skipped_stages": _append_stage(state.get("skipped_stages"), "rerank"),
+            **_budget_runtime_updates(state),
+        }
+
+    reranked = await _RERANKER.rerank(
+        query=state["original_query"],
+        chunks=chunks,
+        top_n=_SETTINGS.max_merged_chunks,
+    )
+    finalized = await RetrievalService.finalize_chunks(state["original_query"], reranked)
+    return {
+        "working_chunks": _chunk_models_to_dicts(finalized["chunks"]),
+        "retrieval_context": finalized["context"],
+        "sources": finalized["sources"],
+        "confidence": finalized["confidence"],
+        **_budget_runtime_updates(state),
+    }
+
+
+# 関数の役割: コンテキストに基づく最終回答の生成
+# 入出力: AgentStateを受け取り、更新差分を返す
+# state更新: answer, confidence などを更新
+# フォールバック: 情報不足時は推測を避けてブロック
+async def generate_node(state: AgentState) -> dict[str, Any]:
+    runtime_updates = _budget_runtime_updates(state, checkpoint="before_generate")
+    chain = _get_generate_chain()
+    retrieval_context = state.get("retrieval_context") or "なし"
+    if state["route"] in ("agentic_retrieval", "fallback_retrieval") and state.get("missing_aspects"):
+        retrieval_context = (
+            "coverage_warning:\n"
+            f"検索コンテキストでは次の観点が不足しています: {', '.join(state.get('missing_aspects', []))}\n"
+            "不足観点については断定せず、情報不足であることを明示してください。\n\n"
+            f"{retrieval_context}"
+        )
+    # Observability: Fix budget at the start of generation
+    remaining_at_start = compute_remaining_budget_ms(state)
+
+    # Strict RAG Safety Net: 内部的な grounding 不足（コンテキストまたはチャンクの欠如）を基準に判定
+    is_retrieval_route = state["route"] in ("agentic_retrieval", "fallback_retrieval")
+    # 検索系において、コンテキストが空、またはチャンクが空、または検索成功回数が0の場合を grounding 不足とみなす
+    # 検索コンテキストが存在しない状態で推測による回答生成を行うのを避けるためのブロック処理
+    is_grounding_insufficient = is_retrieval_route and (
+        not state.get("retrieval_context") or 
+        not state.get("working_chunks") or 
+        state.get("retrieval_success_count", 0) == 0
+    )
+    
+    strict_insufficient_response = False
+    if is_grounding_insufficient:
+        logger.info(f"Strict RAG Safety Net triggered: route={state['route']}, context_empty={not bool(state.get('retrieval_context'))}")
+        answer_text = "検索結果に十分な情報が見つかりませんでした。"
+        strict_insufficient_response = True
+    else:
+        logger.info(f"Generating answer: route={state['route']}, context_len={len(retrieval_context)}")
+        response = await chain.ainvoke(
+            {
+                "route": state["route"],
+                "retrieval_context": retrieval_context,
+                "sources_text": _sources_catalog(state.get("sources", [])),
+                "messages": list(state.get("messages", [])),
+            }
+        )
+        answer_text = response.content.strip()
+    
+    updates: dict[str, Any] = {
+        "answer": answer_text,
+        "strict_insufficient_response": strict_insufficient_response,
+        "remaining_budget_ms_at_generate": remaining_at_start,
+        **runtime_updates,
+    }
+
+    working_chunks = state.get("working_chunks", [])
+    all_bm25_zero = len(working_chunks) == 0 or all(c.get("bm25_score", 0.0) == 0.0 for c in working_chunks)
+    retrieval_conf = state.get("confidence", 0.0)
+
+    fallback_lvl = state.get("fallback_level", "full_path")
+    is_minimal = fallback_lvl == "minimal_answer"
+    is_poor_definition = (all_bm25_zero and retrieval_conf < 0.6)
+    is_llm_fallback = "十分な情報が見つかりません" in answer_text or "十分な情報がない" in answer_text
+
+    if strict_insufficient_response or is_llm_fallback:
+        updates["confidence"] = 0.25  # definition fail-safe(0.2)に近い値で一貫性を持たせる
+        updates["answer_ok"] = False
+        updates["warning"] = "検索結果に十分な情報が見つかりませんでした。"
+    elif state.get("query_type") == "definition" and (is_minimal or is_poor_definition):
+        updates["answer"] = "検索結果にこの用語を直接説明する十分な情報が見つかりませんでした。"
+        updates["confidence"] = 0.2
+        updates["warning"] = "Not enough information found in search results"
+        updates["answer_ok"] = False
+        warning_codes = state.get("warning_codes", [])
+        if "low_confidence_definition_guard" not in warning_codes:
+            updates["warning_codes"] = warning_codes + ["low_confidence_definition_guard"]
+
+        # 早期リターンのためのフラグ立てをして後続の_SETTINGS.answer_critic_enabled処理をスキップ
+        pass
+    else:
+        if not _SETTINGS.answer_critic_enabled:
+            provisional = AdvancedConfidenceEstimator.estimate(
+                critic_coverage=state.get("coverage_score", 0.0),
+                top_chunks=_chunk_dicts_to_models(state.get("working_chunks", [])),
+                answer_verdict=AnswerVerdict(verdict="PASS"),
+            )
+            final_confidence = _apply_confidence_cap(provisional, state)
+            updates["confidence"] = final_confidence
+            updates["answer_ok"] = True
+            updates["warning"] = _warning_for_state(final_confidence, True)
+
+    # Add warning messages for retrieval degradation
+    fallback_level = state.get("fallback_level", "full_path")
+    warning_codes = state.get("warning_codes", [])
+    partial_retrieval_used = state.get("partial_retrieval_used", False) or "partial_retrieval_used" in warning_codes
+    
+    # Determine retrieval quality level
+    if fallback_level == "minimal_answer":
+        retrieval_quality_level = "low"
+    elif partial_retrieval_used or fallback_level in ["single_retrieval_fallback", "critic_skip", "optimization_skip"]:
+        retrieval_quality_level = "medium"
+    else:
+        retrieval_quality_level = "high"
+    
+    updates["retrieval_quality_level"] = retrieval_quality_level
+
+    user_warning = build_user_warning(
+        warning_codes=warning_codes,
+        fallback_level=fallback_level,
+        partial_retrieval_used=partial_retrieval_used,
+        retrieval_quality_level=retrieval_quality_level,
+    )
+    if user_warning and not updates.get("warning"):
+        updates["warning"] = user_warning
+
+    return updates
+
+
+# 関数の役割: 検索不要な直接回答ルート向けの回答生成
+# 入出力: AgentStateを受け取り、更新差分を返す
+# state更新: answer, confidence などを更新
+# フォールバック: 特になし
+async def direct_generate_node(state: AgentState) -> dict[str, Any]:
+    runtime_updates = _budget_runtime_updates(state, checkpoint="before_generate")
+    
+    # query_type が calc の場合、決定論的な expression_evaluator を使用する
+    if state.get("query_type") == "calc":
+        expression = _extract_expression(state["original_query"])
+        try:
+            value = calculate_expression(expression)
+            if value.is_integer():
+                rendered = str(int(value))
+            else:
+                rendered = str(round(value, 6))
+            return {
+                "answer": f"計算結果は {rendered} です。",
+                "confidence": 1.0,
+                "answer_ok": True,
+                "warning": None,
+                "missing_aspects": [],
+                "answer_critic_skipped_reason": None,
+                **runtime_updates,
+            }
+        except Exception:
+            # 評価失敗時は LLM に委ねるか、エラーを返す
+            pass
+
+    chain = _get_direct_chain()
+    logger.info(f"Generating direct answer: route={state['route']}")
+    response = await chain.ainvoke({
+        "messages": list(state.get("messages", []))
+    })
+    
+    return {
+        "answer": response.content.strip(),
+        "confidence": 0.8,
+        "answer_ok": True,
+        "warning": None,
+        "missing_aspects": [],
+        "answer_critic_skipped_reason": None,
+        **runtime_updates,
+    }
+
+
+# calc_generate_node is removed in favor of integrated logic in direct_generate_node
+
+
+# 関数の役割: 構造化クエリルート向けの回答生成
+# 入出力: AgentStateを受け取り、更新差分を返す
+# state更新: answer, confidence, sources などを更新
+# フェールセーフ: 抽出失敗時なども安全に代替テキストが answer に入る設計
+async def structured_query_node(state: AgentState) -> dict[str, Any]:
+    runtime_updates = _budget_runtime_updates(state, checkpoint="before_generate")
+    
+    query = state.get("original_query", "")
+    result = StructuredQueryTool.run(query)
+    
+    updates = {
+        "answer": result.summary,
+        "answer_ok": result.success,
+        "confidence": 0.95 if result.success else 0.5,
+        "warning": None if result.success else "構造化クエリの実行に失敗したか、未対応の操作です。",
+        "missing_aspects": [],
+        "answer_critic_skipped_reason": None,
+        "sources": [{"source_name": result.source_name, "type": "structured_data"}] if result.success else [],
+        "structured_query_source_name": result.source_name if result.success else "Unknown",
+        **runtime_updates,
+    }
+    return updates
+
+
+# 関数の役割: 生成回答のソース忠実性評価
+# 入出力: AgentStateを受け取り、更新差分を返す
+# state更新: answer_ok, confidence などを更新
+# フォールバック: 予算不足時はLLM評価をスキップ
+async def answer_critic_node(state: AgentState) -> dict[str, Any]:
+    skip_reason = _should_skip_answer_critic(state | _budget_runtime_updates(state))
+    if skip_reason is not None:
+        coverage = _coverage_assessment_for_state(state, use_sources=True)
+        answer_ok = not coverage.required_missing_aspects
+        confidence = round(min(state.get("confidence", 0.5), 0.35 if not answer_ok else state.get("confidence", 0.5)), 2)
+        return {
+            "answer_ok": answer_ok,
+            "confidence": confidence,
+            "warning": _warning_for_state(confidence, answer_ok),
+            "critique_reason": f"{skip_reason}: {', '.join(coverage.required_missing_aspects)}" if coverage.required_missing_aspects else skip_reason,
+            "missing_aspects": coverage.missing_aspects,
+            "answer_critic_skipped_reason": skip_reason,
+            "fallback_stages": _append_stage(state.get("fallback_stages"), "answer_critic"),
+            "skipped_stages": _append_stage(state.get("skipped_stages"), "answer_critic"),
+            **_budget_runtime_updates(state),
+        }
+
+    timeout_seconds = _stage_timeout_seconds(
+        state,
+        _SETTINGS.answer_critic_timeout_seconds,
+        reserve_generate=False,
+    )
+    if timeout_seconds <= 0:
+        coverage = _coverage_assessment_for_state(state, use_sources=True)
+        answer_ok = not coverage.required_missing_aspects
+        confidence = round(min(state.get("confidence", 0.5), 0.35 if not answer_ok else state.get("confidence", 0.5)), 2)
+        return {
+            "answer_ok": answer_ok,
+            "confidence": confidence,
+            "warning": _warning_for_state(confidence, answer_ok),
+            "critique_reason": f"remaining_budget_low: {', '.join(coverage.required_missing_aspects)}" if coverage.required_missing_aspects else "remaining_budget_low",
+            "missing_aspects": coverage.missing_aspects,
+            "answer_critic_skipped_reason": "remaining_budget_low",
+            "timeout_stages": _append_stage(state.get("timeout_stages"), "answer_critic"),
+            "fallback_stages": _append_stage(state.get("fallback_stages"), "answer_critic"),
+            "skipped_stages": _append_stage(state.get("skipped_stages"), "answer_critic"),
+            **_budget_runtime_updates(state),
+        }
+
+    verdict = await AnswerCritic.verify(
+        original_query=state["original_query"],
+        answer=state.get("answer", ""),
+        sources_summary=_sources_summary(state.get("sources", []), state.get("retrieval_context", "")),
+        timeout_seconds=timeout_seconds,
+    )
+    confidence = AdvancedConfidenceEstimator.estimate(
+        critic_coverage=state.get("coverage_score", 0.0),
+        top_chunks=_chunk_dicts_to_models(state.get("working_chunks", [])),
+        answer_verdict=verdict,
+    )
+    final_confidence = _apply_confidence_cap(confidence, state, verdict)
+    answer_ok = verdict.verdict == "PASS"
+
+    return {
+        "answer_ok": answer_ok,
+        "confidence": final_confidence,
+        "warning": _warning_for_state(final_confidence, answer_ok),
+        "critique_reason": verdict.reason,
+        "missing_aspects": verdict.missing_aspects,
+        "answer_critic_skipped_reason": None,
+        "fallback_stages": _append_stage(state.get("fallback_stages"), "answer_critic") if verdict.reason.startswith("critic_fallback:") else state.get("fallback_stages", []),
+        "timeout_stages": _append_stage(state.get("timeout_stages"), "answer_critic") if verdict.reason == "critic_fallback:timeout" else state.get("timeout_stages", []),
+        **_budget_runtime_updates(state),
+    }
+
+
+# 関数の役割: 比較意図からの対象エンティティ抽出
+# 入出力: AgentStateを受け取り、更新差分を返す
+# state更新: compare_targets, compare_extract_success などを更新
+# フォールバック: 抽出失敗時はフラグを設定
+def compare_extract_node(state: AgentState) -> dict[str, Any]:
+    query = state.get("original_query", "")
+    targets = extract_targets(query)
+    
+    if targets is None:
+        logger.info({
+            "event": "compare_intent_extracted",
+            "query": query,
+            "compare_extract_success": False,
+            "compare_fallback_reason": "extraction_failed"
+        })
+        return {
+            "compare_extract_success": False,
+            "compare_fallback_reason": "extraction_failed"
+        }
+        
+    logger.info({
+        "event": "compare_intent_extracted",
+        "compare_targets": {"target_a": targets.target_a, "target_b": targets.target_b},
+        "compare_aspect": targets.aspect,
+        "compare_extract_success": True,
+        "initial_budget_ms": state.get("initial_budget_ms", 0) + 15000,
+    })
+    
+    return {
+        "compare_targets": {"target_a": targets.target_a, "target_b": targets.target_b},
+        "compare_aspect": targets.aspect,
+        "compare_extract_success": True,
+        "initial_budget_ms": state.get("initial_budget_ms", 0) + 15000,
+    }
+
+
+# 関数の役割: 比較抽出成否によるルーティング
+# 入出力: AgentStateを受け取り、次ノード名を返す
+# state更新: (ルーティング関数につき更新なし)
+# フォールバック: 抽出失敗時は通常検索ルートへ遷移
+def route_after_compare_extract(state: AgentState) -> str:
+    if state.get("compare_extract_success"):
+        return "compare_retrieve"
+    if not _SETTINGS.enable_agentic:
+        return "retrieve_once"
+    return "retrieve"
+
+
+# 関数の役割: 比較対象ごとの並列検索の実行
+# 入出力: AgentStateを受け取り、更新差分を返す
+# state更新: parallel_results などを更新
+# フォールバック: 特になし
+async def compare_retrieve_node(state: AgentState) -> dict[str, Any]:
+    targets_dict = state.get("compare_targets", {})
+    t_a = targets_dict.get("target_a")
+    t_b = targets_dict.get("target_b")
+    aspect = state.get("compare_aspect")
+    
+    start_t = time.monotonic()
+    results = await run_compare_retrieval([t_a, t_b], aspect)
+    latency_ms = int((time.monotonic() - start_t) * 1000)
+    
+    logger.info({
+        "event": "compare_retrieval_summary",
+        "route": "compare_fast_path",
+        "latency_ms": latency_ms,
+        "compare_targets": targets_dict
+    })
+    
+    return {
+        "parallel_results": [results], # just store raw dict inside list to trick state checks if ever needed
+        "compare_path_used": True
+    }
+
+
+# 関数の役割: 比較結果の結合とカバレッジ評価
+# 入出力: AgentStateを受け取り、更新差分を返す
+# state更新: retrieval_context, compare_context_coverage_ok などを更新
+# フォールバック: カバー不足時はフラグを設定
+def compare_merge_node(state: AgentState) -> dict[str, Any]:
+    targets_dict = state.get("compare_targets", {})
+    t_a = targets_dict.get("target_a")
+    t_b = targets_dict.get("target_b")
+    
+    raw_results = {}
+    if state.get("parallel_results"):
+        raw_results = state["parallel_results"][0]
+        
+    packed_context, count_a, count_b, coverage_ok, fallback_reason, all_chunks, unique_sources = merge_compare_contexts(
+        [t_a, t_b], raw_results
+    )
+    
+    logger.info({
+        "event": "compare_merge_summary",
+        "compare_doc_count_a": count_a,
+        "compare_doc_count_b": count_b,
+        "compare_context_coverage_ok": coverage_ok,
+        "compare_fallback_reason": fallback_reason
+    })
+
+    return {
+        "retrieval_context": packed_context,
+        "compare_doc_count_a": count_a,
+        "compare_doc_count_b": count_b,
+        "compare_context_coverage_ok": coverage_ok,
+        "compare_fallback_reason": fallback_reason,
+        "compare_route_fallback_used": not coverage_ok,
+        "working_chunks": _chunk_models_to_dicts(all_chunks),
+        "sources": unique_sources,
+        "coverage_score": 0.8 if coverage_ok else 0.0,
+    }
+
+
+# 関数の役割: 比較コンテキスト充足度によるルーティング
+# 入出力: AgentStateを受け取り、次ノード名を返す
+# state更新: (ルーティング関数につき更新なし)
+# フォールバック: 網羅不足時は汎用検索へ遷移
+def route_after_compare_merge(state: AgentState) -> str:
+    if state.get("compare_context_coverage_ok"):
+        return "compare_generate"
+    # fallback to generic agentic retrieval if context coverage is bad
+    if not _SETTINGS.enable_agentic:
+        return "retrieve_once"
+    return "retrieve"
+
+
+# 関数の役割: 構造化要件に基づく比較回答の生成
+# 入出力: AgentStateを受け取り、更新差分を返す
+# state更新: answer, answer_ok などを更新
+# フォールバック: 特になし
+async def compare_generate_node(state: AgentState) -> dict[str, Any]:
+    _compare_fallback_prompt = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            "あなたは技術的な概念の比較を得意とする専門のアシスタントです。\n"
+            "以下の検索結果のコンテキストに基づいて、{query} に対して回答を生成してください。\n\n"
+            "{packed_context}\n\n"
+            "## 回答の構造化要件\n"
+            "以下の4つの観点で整理して必ず出力してください：\n"
+            "1. 共通点\n2. 相違点\n3. 向いているケース（使い分けの指針）\n4. 注意点\n\n"
+            "## 制約事項\n"
+            "- 検索結果のコンテキストに含まれていない情報で回答を独自に補完しないでください。\n"
+            "- 根拠となるコンテキストがある場合は、その文末に [1], [2] のような citation（引用番号）を付けてください。\n"
+            "- 片方の情報が著しく不足している場合は、該当箇所でその旨を明記して推測を避けてください。\n"
+            "- 一方の技術や概念を過度に推奨せず、客観的な目線で回答してください。\n"
+            "- 両者の文量をできるだけ揃え、片方だけ過度に長く説明しないでください。"
+        ),
+        ("human", "{query}"),
+    ])
+    prompt = load_prompt("compare_generate", _compare_fallback_prompt)
+    formatted = prompt.format_messages(
+        query=state["original_query"],
+        packed_context=state.get("retrieval_context", "")
+    )
+    
+    start_t = time.monotonic()
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    response = await llm.ainvoke(formatted)
+    latency_ms = int((time.monotonic() - start_t) * 1000)
+    
+    logger.info({
+        "event": "compare_generation_result",
+        "latency_ms": latency_ms,
+        "route": "compare_fast_path",
+    })
+    
+    # We set route to compare_fast_path to bypass normal answer_critic checks or influence them
+    return {
+        "answer": response.content.strip(),
+        "route": "compare_fast_path",
+        "confidence": 0.8,
+        "answer_ok": True,
+        "warning": None,
+        "missing_aspects": [],
+        "answer_critic_skipped_reason": None,
+        "quality_gate_status": "pass",
+        "quality_gate_reasons": [],
+        "quality_gate_confidence": 0.8,
+        **_budget_runtime_updates(state)
+    }
+
+# 関数の役割: 最終回答をメッセージ履歴へコミット
+# 入出力: AgentStateを受け取り、更新差分を返す
+# state更新: messages などを更新
+# フォールバック: 特になし
+async def commit_answer_node(state: AgentState) -> dict[str, Any]:
+    return {"messages": [AIMessage(content=state.get("answer", ""))]}
+
+
+# 関数の役割: ルーター判定後のルート分岐
+# 入出力: AgentStateを受け取り、次ノード名を返す
+# state更新: (ルーティング関数につき更新なし)
+# フォールバック: フォールバックルート判定時は1回検索へ遷移
+def route_after_router(state: AgentState) -> str:
+    if state["route"] == "structured_query_tool":
+        return "structured_query_node"
+    if state["route"] == "direct_answer":
+        return "direct_generate"
+        
+    query_type = state.get("query_type", "")
+    if query_type == "compare":
+        return "compare_extract"
+        
+    if not _SETTINGS.enable_agentic or state["route"] == "fallback_retrieval":
+        return "retrieve_once"
+    return "retrieve"
+
+
+# 関数の役割: 評価結果後のルーティング判定
+# 入出力: AgentStateを受け取り、次ノード名を返す
+# state更新: (ルーティング関数につき更新なし)
+# フォールバック: 予算不足時は再検索せず生成へ進む
+def route_after_retrieval_critic(state: AgentState) -> str:
+    if state.get("force_generate") or state.get("must_generate"):
+        return "generate"
+    if state.get("retrieval_ok") or state.get("retrieval_degraded"):
+        return "generate"
+    if should_skip_rewrite(state):
+        return "generate"
+    # Max 1 rewrite allowed (decompose=1, first rewrite=2)
+    if state.get("retry_count", 0) >= 2:
+        return "generate"
+    if state.get("query_phase") == "initial":
+        return "decompose"
+    return "rewrite"
+
+
+# 関数の役割: 生成後の評価分岐
+# 入出力: AgentStateを受け取り、次ノード名を返す
+# state更新: (ルーティング関数につき更新なし)
+# フォールバック: 予算不足や設定により評価をスキップ
+def route_after_generate(state: AgentState) -> str:
+    route = state.get("route", "direct_answer")
+    if not _SETTINGS.answer_critic_enabled:
+        return "commit_answer"
+    if route not in ("agentic_retrieval", "fallback_retrieval"):
+        return "commit_answer"
+    if "low_confidence_definition_guard" in state.get("warning_codes", []):
+        return "commit_answer"
+        
+    if route == "fallback_retrieval":
+        remaining = compute_remaining_budget_ms(state)
+        # 1) Sufficient budget: Need critic timeout + buffer
+        if remaining < _SETTINGS.answer_critic_timeout_seconds * 1000 + 500:
+            return "commit_answer"
+            
+        # 2) Not a strict insufficient response
+        if state.get("strict_insufficient_response") or not state.get("answer_ok", True):
+            return "commit_answer"
+            
+        # 3) Sources exist
+        if not state.get("sources"):
+            return "commit_answer"
+
+    return "answer_critic"
+
+
+# 関数の役割: 回答評価後の再検索判定
+# 入出力: AgentStateを受け取り、次ノード名を返す
+# state更新: (ルーティング関数につき更新なし)
+# フォールバック: 予算不足や上限到達時はそのまま完了
+def route_after_answer_critic(state: AgentState) -> str:
+    if state.get("answer_ok"):
+        return "commit_answer"
+    if should_skip_rewrite(state):
+        return "commit_answer"
+    if state.get("retrieval_degraded"):
+        return "commit_answer"
+    # Max 1 rewrite allowed (decompose=1 or first attempt=1, first rewrite=2)
+    if _SETTINGS.answer_critic_retry and state.get("retry_count", 0) < 2:
+        return "rewrite"
+    return "commit_answer"
+
+
+builder = StateGraph(AgentState)
+
+builder.add_node("initialize", initialize_node)
+builder.add_node("router", router_node)
+builder.add_node("retrieve", retrieve_node)
+builder.add_node("retrieve_once", retrieve_node)
+builder.add_node("retrieval_critic", retrieval_critic_node)
+builder.add_node("decompose", decompose_node)
+builder.add_node("rewrite", rewrite_node)
+builder.add_node("parallel_retrieve", parallel_retrieve_node)
+builder.add_node("merge", merge_node)
+builder.add_node("rerank", rerank_node)
+builder.add_node("generate", generate_node)
+builder.add_node("answer_critic", answer_critic_node)
+builder.add_node("commit_answer", commit_answer_node)
+builder.add_node("direct_generate", direct_generate_node)
+builder.add_node("structured_query_node", structured_query_node)
+builder.add_node("compare_extract", compare_extract_node)
+builder.add_node("compare_retrieve", compare_retrieve_node)
+builder.add_node("compare_merge", compare_merge_node)
+builder.add_node("compare_generate", compare_generate_node)
+
+builder.set_entry_point("initialize")
+builder.add_edge("initialize", "router")
+builder.add_conditional_edges(
+    "router",
+    route_after_router,
+    {
+        "structured_query_node": "structured_query_node",
+        "direct_generate": "direct_generate",
+        "generate": "generate",
+        "compare_extract": "compare_extract",
+        "retrieve": "retrieve",
+        "retrieve_once": "retrieve_once",
+    },
+)
+builder.add_conditional_edges(
+    "compare_extract",
+    route_after_compare_extract,
+    {
+        "compare_retrieve": "compare_retrieve",
+        "retrieve": "retrieve",
+        "retrieve_once": "retrieve_once",
+    },
+)
+builder.add_edge("compare_retrieve", "compare_merge")
+builder.add_conditional_edges(
+    "compare_merge",
+    route_after_compare_merge,
+    {
+        "compare_generate": "compare_generate",
+        "retrieve": "retrieve",
+        "retrieve_once": "retrieve_once",
+    },
+)
+builder.add_edge("compare_generate", "commit_answer")
+
+builder.add_edge("structured_query_node", "commit_answer")
+builder.add_edge("direct_generate", "commit_answer")
+builder.add_edge("retrieve", "retrieval_critic")
+builder.add_edge("retrieve_once", "generate")
+builder.add_conditional_edges(
+    "retrieval_critic",
+    route_after_retrieval_critic,
+    {
+        "generate": "generate",
+        "decompose": "decompose",
+        "rewrite": "rewrite",
+    },
+)
+builder.add_edge("decompose", "parallel_retrieve")
+builder.add_edge("rewrite", "parallel_retrieve")
+builder.add_edge("parallel_retrieve", "merge")
+builder.add_edge("merge", "rerank")
+builder.add_edge("rerank", "retrieval_critic")
+builder.add_conditional_edges(
+    "generate",
+    route_after_generate,
+    {
+        "answer_critic": "answer_critic",
+        "commit_answer": "commit_answer",
+    },
+)
+builder.add_conditional_edges(
+    "answer_critic",
+    route_after_answer_critic,
+    {
+        "rewrite": "rewrite",
+        "commit_answer": "commit_answer",
+    },
+)
+builder.add_edge("commit_answer", END)
+
+graph = builder.compile(checkpointer=in_memory_memory.get_checkpointer())

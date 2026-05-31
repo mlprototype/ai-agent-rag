@@ -1,0 +1,53 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+*.log
+*.tmp
+
+# Test / coverage artifacts
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Type checker / linter caches
+.mypy_cache/
+.ruff_cache/
+.pyright/
+
+# Editor / OS files
+.DS_Store
+.idea/
+.vscode/
+
+# Virtual environments
+.venv
+venv/
+env/
+__pypackages__/
+
+# Env files (keep example)
+.env
+.env.*
+!.env.example
+
+# Local DB / cache
+*.sqlite3
+*.db
+.cache/
+.uv/
+.uv-cache/
+
+# Local docs output
+# docs/
+
+.gemini/
+GEMINI.md
+
+_all_project_code.txt
+
+merge_code.py

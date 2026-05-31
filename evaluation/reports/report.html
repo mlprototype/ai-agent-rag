@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Agent Evaluation Report</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 1000px; margin: 0 auto; padding: 20px; background-color: #f9f9f9; }
+        h1, h2, h3 { color: #2c3e50; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+        table { width: 100%; border-collapse: collapse; margin: 20px 0; background-color: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        th, td { padding: 12px; border: 1px solid #eee; text-align: left; }
+        th { background-color: #f8f9fa; font-weight: 600; }
+        tr:nth-child(even) { background-color: #fafafa; }
+        .summary-box { background-color: #fff; padding: 20px; border-radius: 8px; border-left: 5px solid #3498db; margin-bottom: 30px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .action-box { background-color: #fff; padding: 20px; border-radius: 8px; border-left: 5px solid #e74c3c; margin-bottom: 30px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.85em; font-weight: 600; }
+        .badge-success { background-color: #d4edda; color: #155724; }
+        .badge-warning { background-color: #fff3cd; color: #856404; }
+        .badge-danger { background-color: #f8d7da; color: #721c24; }
+        .diff-pos { color: #27ae60; font-weight: bold; }
+        .diff-neg { color: #e74c3c; font-weight: bold; }
+        .footer { margin-top: 50px; font-size: 0.9em; color: #7f8c8d; text-align: center; }
+    </style>
+</head>
+<body>
+
+    <h1>AI Agent Evaluation Report</h1>
+
+    <div class="summary-box">
+        <h2>📊 エグゼクティブ・サマリー</h2>
+        <ul>
+        <li>初回評価結果: 4 件のテストを実行しました。</li>
+        <li>品質基準合格率: 75.0%</li>
+        
+        </ul>
+    </div>
+
+    <h2>📈 全体指標比較</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>指標</th>
+                <th>Baseline</th>
+                <th>Current</th>
+                <th>差分</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>総件数</td>
+                <td>-</td>
+                <td>4</td>
+                <td>-</td>
+            </tr>
+            <tr>
+                <td>品質基準合格率</td>
+                <td>-</td>
+                <td>75.0%</td>
+                <td class="">
+                    -
+                </td>
+            </tr>
+            <tr>
+                <td>平均類似度</td>
+                <td>-</td>
+                <td>0.75</td>
+                <td>-</td>
+            </tr>
+            <tr>
+                <td>平均信頼度</td>
+                <td>-</td>
+                <td>0.65</td>
+                <td>-</td>
+            </tr>
+            <tr>
+                <td>レイテンシ p50</td>
+                <td>-ms</td>
+                <td>9546.5ms</td>
+                <td class="">
+                    -ms
+                </td>
+            </tr>
+        </tbody>
+    </table>
+
+    
+
+    <div class="action-box">
+        <h2>⚠️ 要対応ケース (Action Required) - 計 4 件</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>クエリ</th>
+                    <th>理由</th>
+                    <th>類似度</th>
+                    <th>信頼度</th>
+                    <th>比較</th>
+                </tr>
+            </thead>
+            <tbody>
+            <tr>
+                    <td>FastAPIについて教えてください。</td>
+                    <td>低類似度, 品質基準不合格, 低信頼度</td>
+                    <td>0.00</td>
+                    <td>0.34</td>
+                    <td>新規</td>
+                </tr>
+            <tr>
+                    <td>RAGとは何ですか？</td>
+                    <td>フォールバック発生</td>
+                    <td>1.00</td>
+                    <td>0.70</td>
+                    <td>新規</td>
+                </tr>
+            <tr>
+                    <td>pgvectorとは何ですか？</td>
+                    <td>フォールバック発生</td>
+                    <td>1.00</td>
+                    <td>0.80</td>
+                    <td>新規</td>
+                </tr>
+            <tr>
+                    <td>LangGraphは何に使われますか？</td>
+                    <td>フォールバック発生</td>
+                    <td>1.00</td>
+                    <td>0.74</td>
+                    <td>新規</td>
+                </tr>
+            
+            </tbody>
+        </table>
+    </div>
+
+    <div class="footer">
+        Report generated at: 2026-04-24T22:25:30.503094<br>
+        Baseline: N/A
+    </div>
+
+</body>
+</html>

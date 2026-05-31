@@ -1,0 +1,168 @@
+# ファイルの責務: 外部インターフェースから呼び出されるチャットのユースケース処理
+# 主な入出力: ChatRequestを受け取り、LangGraphを実行してChatResponseを返す
+import logging
+import time
+from typing import AsyncGenerator
+
+from langchain_core.messages import HumanMessage
+
+from application.agents.graph import graph
+from application.dto.chat_models import ChatRequest, ChatResponse, Source
+from config.settings import get_settings
+
+_SETTINGS = get_settings()
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+
+class ChatService:
+    """
+    チャットのユースケース操作を処理するアプリケーションサービス層。
+    外部インターフェース（API/CLI）とエージェントワークフロー（LangGraph）の架け橋となります。
+    Citation（引用）情報の抽出とConfidence（信頼度）の取得もここで行います。
+    """
+
+    @staticmethod
+    def _extract_sources(state, answer: str) -> tuple[list[Source], int]:
+        import re
+        raw_sources = state.get("sources", [])
+        if not raw_sources:
+            return [], 0
+            
+        # [1], [1, 2], [1][2] などの様々な形式から数字を抽出
+        cited_ids_str = re.findall(r"\[([\d,\s]+)\]", answer)
+        cited_ids = set()
+        for cid_group in cited_ids_str:
+            for cid in cid_group.split(","):
+                cid = cid.strip()
+                if cid.isdigit():
+                    cited_ids.add(int(cid))
+        
+        if not cited_ids:
+            return [], len(raw_sources)
+
+        sources = []
+        for src in raw_sources:
+            citation_id = src.get("citation_id")
+            if citation_id in cited_ids:
+                sources.append(Source(
+                    citation_id=citation_id,
+                    doc_id=src.get("doc_id", "不明"),
+                    chunk_id=src.get("chunk_id", ""),
+                    snippet=src.get("snippet", ""),
+                    score=src.get("hybrid_score", src.get("score", 0.0)),
+                    hybrid_score=src.get("hybrid_score", 0.0),
+                    vector_score=src.get("vector_score", 0.0),
+                    bm25_score=src.get("bm25_score", 0.0),
+                    rerank_score=src.get("rerank_score", 0.0),
+                ))
+        return sources, len(raw_sources) - len(sources)
+
+    @staticmethod
+    async def ask_question(request: ChatRequest) -> ChatResponse:
+        """
+        エージェントからの完全な生成レスポンスを取得し、
+        Citation（引用元）とConfidence（信頼度）を含む構造化レスポンスを返します。
+        """
+        inputs = {"messages": [HumanMessage(content=request.question)]}
+        config = {"configurable": {"thread_id": request.session_id}}
+        final_state = {}
+        started_at = time.monotonic()
+
+        async for event in graph.astream(inputs, config=config, stream_mode="values"):
+            final_state = event
+
+        query_type = final_state.get("query_type")
+        route = final_state.get("route")
+        answer = final_state.get("answer", "")
+        
+        total_latency_ms = int((time.monotonic() - started_at) * 1000)
+        timeout_stages = list(final_state.get("timeout_stages", []))
+        fallback_stages = list(final_state.get("fallback_stages", []))
+        critique_reason = final_state.get("critique_reason", "")
+        warning_codes = final_state.get("warning_codes", [])
+        
+        critic_degraded = bool(
+            final_state.get("retrieval_critic_skipped_reason")
+            or final_state.get("answer_critic_skipped_reason")
+            or critique_reason.startswith("critic_fallback:")
+            or final_state.get("retrieval_degraded")
+        )
+
+        if route == "direct_answer":
+            sources = None
+            filtered_count = 0
+            # calc の場合は確信度 1.0, 挨拶などは None
+            confidence = round(final_state.get("confidence", 0.8), 2) if query_type == "calc" else None
+            warning = None
+            source_name = None
+        elif route == "structured_query_tool":
+            sources = None
+            filtered_count = 0
+            confidence = round(final_state.get("confidence", 0.95), 2)
+            warning = final_state.get("warning")
+            # 構造化クエリの結果からデータソース名を取得
+            source_name = final_state.get("structured_query_source_name")
+        else:
+            sources, filtered_count = ChatService._extract_sources(final_state, answer)
+            confidence = round(final_state.get("confidence", 0.5), 2)
+            warning = final_state.get("warning")
+            source_name = None
+
+        logger.info(
+            {
+                "event": "chat_request_summary",
+                "session_id": request.session_id,
+                "query_type": query_type,
+                "route": route,
+                "total_latency_ms": total_latency_ms,
+                "router_timeout": "router" in timeout_stages,
+                "decompose_timeout": any(stage in {"decompose", "rewrite"} for stage in timeout_stages),
+                "critic_degraded": critic_degraded,
+                "final_confidence": confidence,
+                "timeout_stage": timeout_stages,
+                "fallback_used": bool(fallback_stages),
+                "fallback_level": final_state.get("fallback_level", "full_path"),
+                "partial_retrieval_used": final_state.get("partial_retrieval_used", False),
+                "retrieval_timeout_count": final_state.get("retrieval_timeout_count", 0),
+                "retrieval_success_count": final_state.get("retrieval_success_count", 0),
+                "warning_codes": warning_codes,
+                "retrieval_quality_level": final_state.get("retrieval_quality_level", "high"),
+                "remaining_budget_ms_at_generate": final_state.get("remaining_budget_ms_at_generate", 0),
+                "skipped_stages": final_state.get("skipped_stages", []),
+                "direct_definition_evidence_found": query_type == "definition" and "low_confidence_definition_guard" not in warning_codes,
+                "retrieval_grounding_sufficient": final_state.get("answer_ok", False),
+                "citation_filtered_count": filtered_count,
+            }
+        )
+
+        return ChatResponse(
+            answer=answer,
+            query_type=query_type,
+            route=route,
+            sources=sources,
+            source_name=source_name,
+            confidence=confidence,
+            warning=warning,
+        )
+
+    # 関数の役割: エージェントが生成したテキストトークンのみをストリーミングする
+    # 入出力: ChatRequestを受け取り、文字列トークンのAsyncGeneratorを返す
+    @staticmethod
+    async def stream_question(request: ChatRequest) -> AsyncGenerator[str, None]:
+        if _SETTINGS.answer_critic_retry:
+            response = await ChatService.ask_question(request)
+            for index in range(0, len(response.answer), 24):
+                yield response.answer[index:index + 24]
+            return
+
+        inputs = {"messages": [HumanMessage(content=request.question)]}
+        config = {"configurable": {"thread_id": request.session_id}}
+
+        async for event in graph.astream_events(inputs, config=config, version="v2"):
+            kind = event["event"]
+            node = event.get("metadata", {}).get("langgraph_node")
+            if kind == "on_chat_model_stream" and node == "generate":
+                chunk = event["data"]["chunk"].content
+                if chunk:
+                    yield chunk

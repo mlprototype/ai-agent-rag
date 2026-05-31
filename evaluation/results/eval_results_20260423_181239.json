@@ -1,0 +1,189 @@
+{
+  "metadata": {
+    "timestamp": "2026-04-23T18:12:39.595245",
+    "total_records": 4,
+    "execution_time_ms": 45188
+  },
+  "summary": {
+    "total_count": 4,
+    "response_generated_rate": 1.0,
+    "answer_ok_rate": 0.5,
+    "warning_rate": 0.5,
+    "fallback_rate": 1.0,
+    "degraded_rate": 1.0,
+    "avg_confidence": 0.427,
+    "avg_similarity": 0.5,
+    "latency_p50_ms": 9428.5,
+    "latency_p95_ms": 12316.0
+  },
+  "by_query_type": {
+    "definition": {
+      "total_count": 2,
+      "response_generated_rate": 1.0,
+      "answer_ok_rate": 0.5,
+      "warning_rate": 0.5,
+      "fallback_rate": 1.0,
+      "degraded_rate": 1.0,
+      "avg_confidence": 0.42,
+      "avg_similarity": 0.5,
+      "latency_p50_ms": 9304.5,
+      "latency_p95_ms": 6293.0
+    },
+    "retrieval_complex": {
+      "total_count": 2,
+      "response_generated_rate": 1.0,
+      "answer_ok_rate": 0.5,
+      "warning_rate": 0.5,
+      "fallback_rate": 1.0,
+      "degraded_rate": 1.0,
+      "avg_confidence": 0.435,
+      "avg_similarity": 0.5,
+      "latency_p50_ms": 10253.0,
+      "latency_p95_ms": 6541.0
+    }
+  },
+  "by_route": {
+    "agentic_retrieval": {
+      "total_count": 3,
+      "response_generated_rate": 1.0,
+      "answer_ok_rate": 0.667,
+      "warning_rate": 0.333,
+      "fallback_rate": 1.0,
+      "degraded_rate": 1.0,
+      "avg_confidence": 0.487,
+      "avg_similarity": 0.667,
+      "latency_p50_ms": 12316.0,
+      "latency_p95_ms": 12316.0
+    },
+    "fallback_retrieval": {
+      "total_count": 1,
+      "response_generated_rate": 1.0,
+      "answer_ok_rate": 0.0,
+      "warning_rate": 1.0,
+      "fallback_rate": 1.0,
+      "degraded_rate": 1.0,
+      "avg_confidence": 0.25,
+      "avg_similarity": 0.0,
+      "latency_p50_ms": 6541.0,
+      "latency_p95_ms": 6541.0
+    }
+  },
+  "distributions": {
+    "warning_codes": {
+      "low_confidence_definition_guard": 1,
+      "TIMEOUT_ROUTER": 1,
+      "ROUTER_UNCERTAIN": 1,
+      "LOW_CONFIDENCE": 1
+    },
+    "fallback_level": {
+      "LEVEL_1": 2,
+      "LEVEL_2": 2
+    },
+    "retrieval_quality_level": {
+      "high": 4
+    },
+    "reason_code": {
+      "SUCCESS": 4
+    }
+  },
+  "records": [
+    {
+      "query": "RAGとは何ですか？",
+      "query_type": "definition",
+      "route": "agentic_retrieval",
+      "answer": "検索結果にこの用語を直接説明する十分な情報が見つかりませんでした。",
+      "confidence": 0.2,
+      "fallback_level": "LEVEL_1",
+      "latency_ms": 12316,
+      "retrieval_quality_level": "high",
+      "source_name": null,
+      "similarity": 0.0,
+      "reason_code": "SUCCESS",
+      "response_generated": true,
+      "answer_ok": false,
+      "degraded": true,
+      "critic_degraded": true,
+      "retrieval_degraded": true,
+      "strict_insufficient_response": false,
+      "warning": true,
+      "warning_codes": [
+        "low_confidence_definition_guard"
+      ],
+      "expected_query_type": null,
+      "expected_route": null
+    },
+    {
+      "query": "pgvectorとは何ですか？",
+      "query_type": "definition",
+      "route": "agentic_retrieval",
+      "answer": "pgvectorはPostgreSQL用のオープンソースのベクトル類似性検索です。完全一致および近似最近傍探索をサポートしています[1]。",
+      "confidence": 0.64,
+      "fallback_level": "LEVEL_2",
+      "latency_ms": 6293,
+      "retrieval_quality_level": "high",
+      "source_name": null,
+      "similarity": 1.0,
+      "reason_code": "SUCCESS",
+      "response_generated": true,
+      "answer_ok": true,
+      "degraded": true,
+      "critic_degraded": true,
+      "retrieval_degraded": true,
+      "strict_insufficient_response": false,
+      "warning": false,
+      "warning_codes": [],
+      "expected_query_type": null,
+      "expected_route": null
+    },
+    {
+      "query": "LangGraphは何に使われますか？",
+      "query_type": "retrieval_complex",
+      "route": "agentic_retrieval",
+      "answer": "LangGraphは、LLMを使用してステートフルなマルチアクターアプリケーションを構築するためのライブラリです。また、エージェンティックなワークフローのための循環グラフを作成することができます[1]。",
+      "confidence": 0.62,
+      "fallback_level": "LEVEL_2",
+      "latency_ms": 13965,
+      "retrieval_quality_level": "high",
+      "source_name": null,
+      "similarity": 1.0,
+      "reason_code": "SUCCESS",
+      "response_generated": true,
+      "answer_ok": true,
+      "degraded": true,
+      "critic_degraded": true,
+      "retrieval_degraded": true,
+      "strict_insufficient_response": false,
+      "warning": false,
+      "warning_codes": [],
+      "expected_query_type": null,
+      "expected_route": null
+    },
+    {
+      "query": "FastAPIについて教えてください。",
+      "query_type": "retrieval_complex",
+      "route": "fallback_retrieval",
+      "answer": "検索結果に十分な情報が見つかりませんでした。",
+      "confidence": 0.25,
+      "fallback_level": "LEVEL_1",
+      "latency_ms": 6541,
+      "retrieval_quality_level": "high",
+      "source_name": null,
+      "similarity": 0.0,
+      "reason_code": "SUCCESS",
+      "response_generated": true,
+      "answer_ok": false,
+      "degraded": true,
+      "critic_degraded": false,
+      "retrieval_degraded": false,
+      "strict_insufficient_response": false,
+      "warning": true,
+      "warning_codes": [
+        "TIMEOUT_ROUTER",
+        "ROUTER_UNCERTAIN",
+        "LOW_CONFIDENCE"
+      ],
+      "expected_query_type": null,
+      "expected_route": null
+    }
+  ]
+}

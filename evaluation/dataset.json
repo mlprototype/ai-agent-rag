@@ -1,0 +1,18 @@
+[
+  {
+    "question": "RAGとは何ですか？",
+    "expected_answer": "RAG (Retrieval-Augmented Generation) は、回答を生成する前に外部ナレッジベースから関連情報を取得することで、大規模言語モデルを強化する手法です。"
+  },
+  {
+    "question": "pgvectorとは何ですか？",
+    "expected_answer": "pgvector は PostgreSQL 用のオープンソースのベクトル類似性検索拡張機能です。完全一致および近似最近傍探索をサポートしています。"
+  },
+  {
+    "question": "LangGraphは何に使われますか？",
+    "expected_answer": "LangGraph は、LLMを使用してステートフルなマルチアクターアプリケーションを構築するためのライブラリです。エージェンティックなワークフローのための循環グラフを作成できます。"
+  },
+  {
+    "question": "FastAPIについて教えてください。",
+    "expected_answer": "FastAPI は、標準の Python 型ヒントに基づいて Python 3.8+ で API を構築するための、モダンで高速な（高性能な）Web フレームワークです。"
+  }
+]
