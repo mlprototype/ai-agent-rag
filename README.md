@@ -31,87 +31,23 @@
 
 本プロジェクトは、常に無条件で検索を実行する従来のRAGとは異なり、LangGraph ベースの router / critic / budget-aware graph が「検索が必要か」「どこまで検索を続けるか」「不足時にどう縮退するか」を判断します。現在の中心実装は汎用 tool calling よりも、明示的な状態遷移グラフによる制御です。
 
-自律的なルーティングと段階的な検索処理を実装しており、各Phaseを経て機能が強化されています。
+---
 
-| Phase | 主要機能 | キーワード |
-| :--- | :--- | :--- |
-| Phase 1 | Agentic RAG Core | LangGraph / 状態遷移 |
-| Phase 2 | Production RAG | Hybrid Search / Confidence |
-| Phase 2.5 | Production RAG 強化 | 5ステージ検索パイプライン |
-| Phase 3 | Control Plane | Heuristic Routing / Compare Fast-Path / Budget |
+## 想定ユースケース
 
-### Phase 1: Agentic RAG Core（✅ 実装完了）
+### 問い合わせ内容に応じて回答経路を動的に切り替える業務QAエージェント
 
-| 機能 | 概要 |
-| :--- | :--- |
-| **動的ルーティング（Agent Routing）** | Heuristic + LLM Router が `direct_answer` / `calculator` / `structured_query_tool` / `agentic_retrieval` / `fallback_retrieval` を判定 |
-| **Clean Architecture** | 業務ロジック、アダプター、インターフェースを疎結合にレイヤー分離 |
-| **リアルタイム生成（StreamingResponse）** | FastAPI `StreamingResponse` による `text/event-stream` 配信。通常は `generate` ノードの出力を逐次返却 |
-| **耐障害性（Stage Timeout & Retry）** | 外部API遅延に対する `asyncio.wait_for` タイムアウト（5秒）とフォールバックエラー処理 |
-| **Prompt Ops（Prompt Versioning）** | `prompts/` 配下のローカル snapshot を runtime 正本として利用し、FastAPI 起動時に prewarm。LangSmith Hub は同期元として扱う |
-| **自動評価パイプライン（Evaluation）** | Recall@3 と Answer Similarity（LLM-as-a-Judge）による検索精度の自動計測 |
+社内ヘルプデスク、業務問い合わせ、仕様確認、FAQ検索などの問い合わせ対応において、質問内容に応じて最適な処理経路を選択するAIエージェントを想定。
 
-### Phase 2: Production RAG（✅ 実装完了）
+すべての質問に対して一律にRAGを実行すると、以下の問題が発生する。
 
-| 機能 | 概要 |
-| :--- | :--- |
-| **Conversation Memory** | `MemorySaver` によるセッション単位の会話履歴保持。`session_id` をキーとしたマルチターン対話を実現 |
-| **Citation 付き回答** | `answer + query_type + route + sources[] + confidence + warning` の構造化レスポンス。引用元ドキュメントの `doc_id / chunk_id / score / snippet / rerank_score` を追跡 |
-| **Document Ingestion Pipeline** | `unstructured` ベースのマルチフォーマット（MD/HTML/TXT）取り込みパイプライン。API経由でのファイル/ディレクトリ一括取り込みに対応 |
-| **Semantic Chunking** | `SemanticChunker`（コサイン類似度パーセンタイル方式）による意味的文脈を保持したチャンク分割 |
+- 単純な質問にも検索・LLM呼び出しが走り、コストが増える
+- 比較質問や条件付き質問に対して通常RAGだけでは精度が出にくい
+- 構造化データを参照すべき質問に対して、文書検索だけで回答してしまう
+- 検索結果が不足している場合でも無理に回答してしまう
+- Fallbackや段階的縮退がないと、障害時にUXが悪化する
 
-### Phase 2.5: Production RAG 強化（✅ 実装完了）
-
-| 機能 | 概要 |
-| :--- | :--- |
-| **Query Rewrite** | LLM（GPT-4o-mini）による検索向けクエリ書き換え。`original_query` + `rewrite_query` の併用で検索精度向上 |
-| **Hybrid Search** | Vector Search（pgvector） + Keyword Search（PostgreSQL FTS: tsvector/ts_rank）のスコア正規化・加重平均による統合検索 |
-| **Confidence Estimation** | Hybrid Score 分布からのヒューリスティック信頼度算出: `clamp(0.2 + 0.6×top1 + 0.2×margin, 0, 1)` |
-| **Dynamic TopK** | Confidence に基づく動的な取得件数制御（3〜8件を自動調整） |
-| **Extractive Compression** | 文レベルの関連性判定による抽出圧縮。LLM入力のノイズとトークンコストを削減 |
-| **Optional Reranker** | `ENABLE_RERANK=true` 時のみ Cohere Reranker を有効化。既定では Passthrough で `hybrid_score` を `rerank_score` に引き継ぐ |
-
-### Phase 3: Control Plane Enhancements（✅ 実装完了）
-
-Phase 3 では、Agentic RAG の制御面を強化し、ルーティング、比較処理、複雑検索に対して、レイテンシ・品質・縮退制御を改善しました。
-
-#### Sprint 1: Heuristic Routing
-
-| 機能 | 概要 |
-| :--- | :--- |
-| **Heuristic Router** | ルールベースの事前分類で `direct` / `calc` / `definition` / `compare` を高確信で即座に判定 |
-| **LLM Router Skip** | Heuristic hit 時は LLM Router をスキップし、router timeout と不要な fallback を削減 |
-| **Observability** | routing decision の structured observability を追加 |
-
-#### Sprint 2: Compare Fast-Path
-
-| 機能 | 概要 |
-| :--- | :--- |
-| **Compare 分離** | `query_type=compare` を専用パイプラインに分離し、比較対象ごとの独立並列検索を実現 |
-| **Compare パイプライン** | intent 抽出 → target 別 retrieval → merge → 専用 generate の4段構成。coverage 不足時は通常 retrieval にフォールバック |
-| **Compare Metadata** | compare fast-path 成功時は `quality_gate_status` / `quality_gate_confidence` を state に記録（現状はプレースホルダ値） |
-| **フォールバック** | 抽出失敗・coverage 不足時は `agentic_retrieval` へ自動フォールバック |
-
-#### Sprint 3: Retrieval Complex Budget / Fallback Control
-
-| 機能 | 概要 |
-| :--- | :--- |
-| **Budget-aware 制御** | `retrieval_complex` に `generate` / `commit` 予約付き budget 管理を導入 |
-| **段階的縮退** | `fallback_level` による5段階縮退（full_path → optimization_skip → critic_skip → single_retrieval_fallback → minimal_answer） |
-| **Partial Retrieval** | 並列検索の部分成功を許容し、全失敗と部分失敗を区別して品質判定 |
-| **Warning / Observability** | `warning_codes`（内部）と user-facing `warning`（外部）を分離。`retrieval_quality_level` で品質段階を可視化 |
-| **Dynamic Skip** | rerank / critic / rewrite を残予算に応じて段階的にスキップ |
-
-#### Sprint 4: Structured Query Evolution
-
-| 機能 | 概要 |
-| :--- | :--- |
-| **SQLite Backend** | Python 辞書ベースから SQLite 実データベース実行へ移行。`data/structured_query.db` による実運用に近い集計を実現 |
-| **責務分離 (Pipeline)** | Parse → Validate → SQL Builder → Execute (SQLite) → Format の 5 段階パイプラインに整理 |
-| **Read-only 安全制御** | SQL インジェクション対策（プレースホルダ）に加え、実行レベルでの破壊的キーワード（INSERT/UPDATE/DELETE等）の厳格なブロック |
-| **Standardized Response** | 構造化クエリ専用の `source_name`（例: `SQLite (sales)`）をレスポンスに付与。RAG との識別性を向上 |
-
-これにより、不要なAPIコストとレイテンシを削減し、**企業利用に耐える高精度かつ自律的な Production RAG** を実現しています。
+このシステムでは、LangGraphによる状態遷移制御とHeuristic + LLM Routerにより、質問内容に応じて処理経路を動的に切り替える。
 
 ---
 
@@ -437,67 +373,38 @@ class ChatResponse(BaseModel):
 
 ---
 
-## Observability
+## Phase 進化
 
-各ノードは構造化ログ（`logger.info({"event": ...})`）を出力します。以下は記録されている主要な項目です。
+本システムは、Agentic RAGの中核機能から、Production RAGとしての検索品質向上、さらにControl Planeによる制御強化へと段階的に機能を拡張しています。
 
-### Routing
+| Phase | 位置づけ | 主な実装 | キーワード |
+| :--- | :--- | :--- | :--- |
+| Phase 1 | Agentic RAG Core | LangGraphによる状態遷移、動的ルーティング、Prompt Ops、自動評価 | LangGraph / Routing / Evaluation |
+| Phase 2 | Production RAG | Conversation Memory、Citation付き回答、Document Ingestion、Semantic Chunking | Memory / Citation / Ingestion |
+| Phase 2.5 | Production RAG強化 | Query Rewrite、Hybrid Search、Confidence、Dynamic TopK、Extractive Compression | Hybrid Search / Confidence / TopK |
+| Phase 3 | Control Plane強化 | Heuristic Routing、Compare Fast-Path、Budget制御、Fallback、Structured Query | Control Plane / Budget / Fallback |
 
-| フィールド | 説明 |
+これにより、不要なAPIコストとレイテンシを抑えながら、企業利用を想定したProduction RAGに必要なルーティング、検索品質、Fallback、制御性を検証しています。
+
+詳細な実装フェーズと各Sprintの内容は [`docs/phase-evolution.md`](docs/phase-evolution.md) を参照してください。
+
+---
+
+## 可観測性
+
+本システムでは、ルーティング判断、Fallback、Budget消費、Confidence、Prompt解決元などを構造化ログとして出力し、Agentic RAGの処理経路を追跡できるようにしています。
+
+主に以下の観点を記録します。
+
+| 観点 | 内容 |
 | :--- | :--- |
-| `routing_layer` | `heuristic` / `llm` / `fallback` |
-| `route_decision_source` | `heuristic_match` / `llm_success` / `llm_timeout_fallback` / `llm_error_fallback` |
-| `heuristic_matched` | Heuristic ルールにマッチしたか |
-| `heuristic_rule` | マッチしたルール名（`direct_greeting`, `calc_expression`, `compare_keywords`, `definition_keywords`） |
-| `route_decision_latency_ms` | ルーティング解決にかかった時間 |
-| `route_decision_confidence` | 判定の確信度 |
-| `llm_router_invoked` | LLM Router が呼び出されたか |
+| Routing | Heuristic / LLM Router / Fallback の判定経路、信頼度、レイテンシ |
+| Compare Fast-Path | 比較対象の抽出結果、coverage判定、Fallback有無 |
+| Prompt / Runtime | Prompt解決元、version、prewarm、fallback利用有無 |
+| Chat Summary | リクエスト全体のレイテンシ、最終confidence、引用除外件数 |
+| Budget / Fallback | 残予算、縮退レベル、スキップされた処理、warning情報 |
 
-### Compare Fast-Path
-
-| フィールド | 説明 |
-| :--- | :--- |
-| `compare_extract_success` | A/B 対象の抽出成功フラグ |
-| `compare_targets` | `{target_a, target_b}` |
-| `compare_doc_count_a` / `_b` | A/B それぞれの検索ヒット件数 |
-| `compare_context_coverage_ok` | merge 後の coverage 判定結果 |
-| `compare_route_fallback_used` | agentic_retrieval へのフォールバック有無 |
-| `quality_gate_status` | compare fast-path 成功時に現在は `pass` を記録 |
-
-### Prompt / Runtime
-
-| フィールド | 説明 |
-| :--- | :--- |
-| `resolution_source` | prompt 解決元。現行 runtime は `local` が正本 |
-| `prompt_version` | YAML 内の version。Hub 同期後も維持 |
-| `used_fallback` | 埋め込み fallback prompt を使ったか |
-| `prewarm_phase` | `startup` / `runtime` |
-| `critical` | critical prompt かどうか |
-
-### Chat Summary
-
-| フィールド | 説明 |
-| :--- | :--- |
-| `total_latency_ms` | 1 リクエスト全体の所要時間 |
-| `critic_degraded` | critic skip / critic fallback / retrieval_degraded をまとめた要約フラグ |
-| `final_confidence` | 最終的に返却した confidence |
-| `citation_filtered_count` | 回答文中で参照されず除外された source 件数 |
-| `remaining_budget_ms_at_generate` | generate 開始時点の残予算 |
-
-### Budget / Fallback
-
-| フィールド | 説明 |
-| :--- | :--- |
-| `initial_budget_ms` | クエリに割り当てられた初期予算 |
-| `remaining_budget_ms` | 各ノード通過時点の残予算 |
-| `fallback_level` | 現在の縮退レベル |
-| `skipped_stages` | 予算不足でスキップされたステージ一覧 |
-| `budget_pressure_reasons` | 予算圧迫の要因 |
-| `must_generate` | Generate 強制遷移フラグ |
-| `retrieval_degraded` | 検索品質縮退フラグ |
-| `warning_codes` | 内部 warning コード一覧 |
-| `retrieval_quality_level` | 検索品質の段階（内部判定） |
-| `timeout_stages` / `fallback_stages` | タイムアウト/フォールバックが発生したステージ |
+詳細なログフィールド一覧は [`docs/observability.md`](docs/observability.md) を参照してください。
 
 ---
 
@@ -531,143 +438,19 @@ class ChatResponse(BaseModel):
 
 ---
 
-## ディレクトリ構成
+## レイヤー構成
 
-```
-ai-agent-rag/
-├── main.py                                  # CLI エントリーポイント
-├── pyproject.toml                           # プロジェクト定義 (uv)
-├── docker-compose.yml                       # pgvector コンテナ定義
-├── .env.example                             # 環境変数テンプレート
-├── sample_ingest.md                         # 取り込み確認用サンプル文書
-├── data/                                    # --- Persistent Data ---
-│   └── structured_query.db                  #   SQLite 実データベース（売上・在庫等）
-│
-│
-├── config/                                  # --- Configuration Layer ---
-│   └── settings.py                          #   環境変数・レイテンシ予算・しきい値設定
-│
-├── api/                                     # --- API / Interface Layer ---
-│   ├── main.py                              #   FastAPI アプリケーション (v3.0.0, prompt prewarm付き)
-│   └── routers/
-│       └── ingest.py                        #   POST /ingest/file, /ingest/directory
-│
-├── application/                             # --- Application Layer ---
-│   ├── agents/
-│   │   ├── graph.py                         #   LangGraph ステートグラフ定義 + Control Plane
-│   │   └── state.py                         #   AgentState定義 (メタデータ・予算情報保持)
-│   ├── dto/
-│   │   └── chat_models.py                   #   ChatRequest / ChatResponse / Source
-│   ├── interfaces/
-│   │   └── conversation_memory.py           #   ConversationMemory ABC (DIP)
-│   └── services/
-│       └── chat_service.py                  #   ユースケース + Citation抽出 + Confidence/Warning整形
-│
-├── domain/                                  # --- Domain Layer ---
-│   ├── models/
-│   │   └── retrieval_models.py              #   RetrievedChunk / RewriteResult / CompressionResult
-│   └── services/
-│       ├── router.py                        #   経路ルーティング (Heuristic + LLM Facade)
-│       ├── heuristic_router.py              #   Heuristic分類ルール
-│       ├── retrieval_budget.py              #   レイテンシ予算管理 + 段階的縮退判定
-│       ├── retrieval_service.py             #   5ステージ検索パイプライン
-│       ├── query_decomposer.py              #   Decompose / Rewrite による sub-query 計画
-│       ├── result_merger.py                 #   Max Pooling Merge (検索結果統合)
-│       ├── retrieval_critic.py              #   Retrieval Critic (検索結果の品質評価)
-│       ├── answer_critic.py                 #   Answer Critic (最終回答の検証)
-│       ├── compare_intent.py                #   Compare: 正規表現による A/B 抽出
-│       ├── compare_retrieval.py             #   Compare: subquery builder + 並列検索
-│       ├── compare_merge.py                 #   Compare: コンテキスト統合 + coverage 判定
-│       ├── compare_quality_gate.py          #   Compare 品質評価ユーティリティ（現状 graph 未接続）
-│       ├── coverage_checker.py              #   回答の網羅性チェック (entity/axis)
-│       ├── confidence.py                    #   Confidence 算出 + Dynamic TopK
-│       ├── prompt_loader.py                 #   Prompt Ops (local snapshot 読込 / prewarm log)
-│       ├── prompt_registry.py               #   Prompt 定義レジストリ
-│       ├── prompt_formats.py                #   YAML ↔ ChatPromptTemplate 変換
-│       ├── prompt_sync.py                   #   LangSmith Hub → local transactional sync
-│       ├── query_rewriter.py                #   LLM クエリ書き換え
-│       ├── hybrid_search.py                 #   Vector + Keyword 統合検索
-│       ├── compressor.py                    #   Extractive Compression
-│       ├── expression_evaluator.py          #   決定論的な数式評価ユーティリティ
-│       ├── structured_query.py              #   Structured Query オーケストレーション
-│       ├── structured_query_validator.py    #   SQL インジェクション・セマンティック検証
-│       ├── structured_query_sql_builder.py  #   SQLite 用 SQL 生成ロジック
-│       ├── sqlite_structured_query.py       #   SQLite 実実行アダプタ (Read-only)
-│       ├── structured_query_formatter.py    #   実行結果の自然言語整形
-│       ├── structured_query_types.py        #   構造化クエリ用型定義
-│       ├── structured_query_datasets.py     #   デモ用テーブル定義・初期データ
-│       └── ingestion_service.py             #   取り込みオーケストレーション
-│
-├── adapters/                                # --- Adapters Layer ---
-│   └── tools/
-│       ├── retrieval_tool.py                #   LangChain @tool ラッパー（検索）
-│       └── calculator.py                    #   LangChain @tool ラッパー（計算）
-│
-├── infrastructure/                          # --- Infrastructure Layer ---
-│   ├── ingestion/
-│   │   └── unstructured_loader.py           #   unstructured パーサー (MD/HTML/TXT)
-│   ├── memory/
-│   │   └── in_memory_memory.py              #   MemorySaver ラッパー (InMemory実装)
-│   └── retrieval/
-│       ├── reranker.py                      #   Cohere Reranker / Passthrough (Feature Flag)
-│       ├── vector_store.py                  #   pgvector 接続・シード・非同期対応
-│       ├── keyword_search.py                #   PostgreSQL FTS (tsvector / ts_rank)
-│       ├── embedding.py                     #   OpenAI Embeddings (text-embedding-3-small)
-│       └── chunking.py                      #   SemanticChunker (コサイン類似度パーセンタイル)
-│
-├── prompts/                                 # --- Prompt Ops ---
-│   ├── router/v1.yaml                       #   Router用プロンプト
-│   ├── decompose/v1.yaml                    #   Decomposer用プロンプト
-│   ├── rewrite/v1.yaml                      #   Rewrite用プロンプト
-│   ├── retrieval_critic/v1.yaml             #   Retrieval Critic用プロンプト
-│   ├── answer_critic/v1.yaml                #   Answer Critic用プロンプト
-│   ├── generate/v1.yaml                     #   Generate用プロンプト
-│   └── compare_generate.yaml                #   Compare 専用 Generate プロンプト
-│
-├── tools/                                   # --- 運用ツール ---
-│   └── sync_prompts_from_hub.py             #   LangSmith Hub → local 同期
-│
-├── scripts/                                 # --- ベンチマーク ---
-│   ├── benchmark_router.py                  #   Router ベンチマーク (Before/After)
-│   └── benchmark_compare.py                 #   Compare Pipeline ベンチマーク
-│
-├── tests/                                   # --- テスト ---
-│   ├── test_compare_intent.py               #   Compare 意図抽出テスト (15件)
-│   ├── test_compare_pipeline.py             #   Compare パイプライン E2E テスト
-│   ├── test_heuristic_router.py             #   Heuristic Router テスト
-│   ├── test_router_service.py               #   Router Facade テスト
-│   ├── test_critic_fallbacks.py             #   Critic フォールバックテスト
-│   ├── test_prompt_loader.py                #   Prompt Loader テスト
-│   ├── test_prompt_sync.py                  #   Prompt Sync テスト
-│   ├── test_retrieval_complex_budget.py     #   Budget / Fallback テスト
-│   ├── test_retrieval_complex_fallback.py   #   retrieval_complex 縮退経路テスト
-│   ├── test_evaluation.py                   #   集計・統計計算ロジックのテスト
-│   ├── test_reporter.py                     #   比較・レポート生成ロジックのテスト
-│   ├── test_structured_query_validator.py   #   SQ バリデータ・安全制御テスト
-│   ├── test_structured_query_sql_builder.py #   SQ SQL 生成ロジックテスト
-│   ├── test_structured_query_sqlite_execution.py # SQ SQLite 実行テスト
-│   ├── test_structured_query_tool.py        #   SQ ツール結合テスト
-│   └── test_structured_query_router.py      #   SQ ルーティングテスト
-│
-├── evaluation/                              # --- 評価パイプライン ---
-│   ├── evaluate.py                          #   評価実行・データ収集メイン
-│   ├── aggregator.py                        #   統計（p50/p95）集計ロジック
-│   ├── schema.py                            #   評価レコード・レポートの Pydantic モデル
-│   ├── reporter.py                          #   比較・レポート生成 (CLI)
-│   ├── dataset.json                         #   評価用データセット
-│   ├── results/                             #   JSON 実行結果保存先
-│   ├── reports/                             #   Markdown/HTML レポート出力先
-│   └── templates/                           #   Jinja2 レポートテンプレート (MD/HTML)
-│
-└── docs/                                    # --- 設計・運用ドキュメント ---
-    ├── EVALUATION.md                        #   評価フロー運用ガイド
-    ├── phase2-production-rag.md              #   Phase 2 設計書
-    ├── phase2-5-design.md                    #   Phase 2.5 設計書
-    ├── phase3-agentic-retrieval-v2.md        #   Phase 3 設計書
-    ├── sprint3_retrieval_complex_optimization_design.md
-    ├── walkthrough2.5.md
-    └── implementation_2.5plan.md
-```
+| レイヤー | 主な責務 | 対応ディレクトリ |
+| :--- | :--- | :--- |
+| API層 | HTTP API、リクエスト受付、ルーティング | `api/` |
+| Application層 | ユースケース、状態管理、レスポンス整形 | `application/` |
+| Domain層 | ルーティング、検索、Budget制御、Fallback、Critic、Structured Query | `domain/` |
+| Infrastructure層 | DB、Embedding、Vector Store、Keyword Search、Reranker、Memory | `infrastructure/` |
+| Adapter層 | LangChain toolなど外部I/Fとの接続 | `adapters/` |
+| Evaluation | 評価実行、集計、レポート生成 | `evaluation/` |
+| Prompt Ops | プロンプト定義・同期・バージョン管理 | `prompts/`, `tools/` |
+
+詳細なファイル単位の構成は [`docs/project-structure.md`](docs/project-structure.md) を参照
 
 ---
 
@@ -693,68 +476,23 @@ ai-agent-rag/
 
 ---
 
-## 設定項目一覧
+## 設定
 
-表のデフォルト値は原則としてコード既定値です。`.env.example` には主要キーのみが記載され、一部はサンプル用に上書きされています（例: `ROUTER_BUDGET_MS=500`）。また `HYBRID_*` / `TOP_K_*` / `STAGE_TIMEOUT_MS_REWRITE|HYBRID|COMPRESS` は各モジュールが環境変数を直接参照します。
+本システムでは、LLM APIキー、LangSmith tracing、PostgreSQL / pgvector、Hybrid Search、Router、Budget、Timeout、Prompt Opsなどの設定を環境変数で管理しています。
 
-| 環境変数 | デフォルト | 説明 |
-| :--- | :--- | :--- |
-| `OPENAI_API_KEY` | - | OpenAI API キー |
-| `LANGSMITH_API_KEY` | - | LangSmith Hub / tracing 用 API キー |
-| `LANGSMITH_WORKSPACE_ID` | - | org/private prompt sync で workspace header が必要な場合に使用 |
-| `LANGCHAIN_TRACING_V2` | `true` | LangSmith トレーシング有効化 |
-| `LANGCHAIN_ENDPOINT` | `https://api.smith.langchain.com` | LangSmith endpoint |
-| `LANGCHAIN_PROJECT` | `ai-agent-rag` | LangSmith project 名 |
-| `COHERE_API_KEY` | - | Cohere API キー (ENABLE_RERANK=true時に必須) |
-| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` / `POSTGRES_HOST` / `POSTGRES_PORT` | `admin` / `password` / `rag_db` / `localhost` / `5432` | PostgreSQL / pgvector 接続設定 |
-| **Search Pipeline** | | |
-| `HYBRID_ALPHA` | `0.6` | Hybrid Search における vector score の重み |
-| `RETRIEVE_K_VECTOR` | `30` | Vector Search の初期取得件数 |
-| `RETRIEVE_K_KEYWORD` | `30` | Keyword Search の初期取得件数 |
-| `TOP_K_MIN` | `3` | 高信頼時の最小採用件数 |
-| `TOP_K_MAX` | `8` | 低信頼時の最大採用件数 |
-| `STAGE_TIMEOUT_MS_REWRITE` | `3000` | RetrievalService 内 Query Rewrite のタイムアウト |
-| `STAGE_TIMEOUT_MS_HYBRID` | `5000` | Hybrid Search 全体のタイムアウト |
-| `STAGE_TIMEOUT_MS_COMPRESS` | `5000` | Extractive Compression のタイムアウト |
-| **Agentic Control Plane** | | |
-| `ENABLE_AGENTIC` | `true` | Agentic RAG (Loop/Critic) の有効化 |
-| `ENABLE_RERANK` | `false` | Reranker (Cohere) の有効化 |
-| `ROUTER_HEURISTIC_ENABLED` | `true` | ルールベース Router の有効化 |
-| `ROUTER_HEURISTIC_COMPARE_ENABLED` | `true` | Compare ヒューリスティックの有効化 |
-| `ROUTER_HEURISTIC_CONFIDENCE_THRESHOLD_PCT` | `85` | Heuristic 判定を採用する信頼度しきい値 |
-| `ROUTER_BUDGET_MS` | `1500` | Router に割り当てる予算（`.env.example` では `500`） |
-| `ROUTER_UNCERTAIN_CONFIDENCE_CAP_PCT` | `80` | router uncertain 時の confidence 上限 |
-| `ANSWER_CRITIC` | `true` | Answer Critic による回答検証の有効化 |
-| `ANSWER_CRITIC_RETRY` | `false` | Answer Critic FAIL時に再検索を試行するか |
-| `MAX_RETRY` | `3` | Agentic Loop の最大リトライ回数 |
-| `MAX_SUB_QUERIES` | `4` | Decomposition 時の最大 Sub-query 数 |
-| `MAX_MERGED_CHUNKS` | `20` | マージ・Rerank 後の最終チャンク上限数 |
-| **Prompt Ops** | | |
-| `PROMPT_NAMESPACE` | `my-rag` | LangSmith Hub 同期時に使う namespace |
-| `PROMPT_LOAD_TIMEOUT_MS` | `1200` | prompt loader 向けの予約済み設定値（現状は `Settings` に保持） |
-| `PROMPT_FAILURE_TTL_MS` | `30000` | prompt failure TTL 向けの予約済み設定値（現状は `Settings` に保持） |
-| `PREWARM_FAIL_FAST` | `true` | 起動時の prompt prewarm 失敗でプロセスを落とすか |
-| **Budget & Critic** | | |
-| `COMPLEX_BUDGET_MS_LOW` | `4000` | 複雑度 Low クエリの初期予算 (ms) |
-| `COMPLEX_BUDGET_MS_MEDIUM` | `7000` | 複雑度 Medium クエリの初期予算 (ms) |
-| `COMPLEX_BUDGET_MS_HIGH` | `9000` | 複雑度 High クエリの初期予算 (ms) |
-| `BUDGET_TOTAL_RETRIEVAL_COMPLEX_MS` | `15000` | `retrieval_complex` 用の最大予算 (ms) |
-| `BUDGET_RESERVED_GENERATE_MS` | `3000` | Generate ノード用に予約する予算 (ms) |
-| `BUDGET_RESERVED_COMMIT_MS` | `500` | Commit ノード用に予約する予算 (ms) |
-| `BUDGET_MIN_FOR_RERANK_MS` | `1000` | Rerank 実行に必要な最低 usable 予算 (ms) |
-| `BUDGET_MIN_FOR_CRITIC_MS` | `1500` | Critic 実行に必要な最低 usable 予算 (ms) |
-| `BUDGET_MIN_FOR_REWRITE_MS` | `3000` | Rewrite 実行に必要な最低 usable 予算 (ms) |
-| `RETRIEVAL_DEGRADE_THRESHOLD_MS` | `2000` | 残り予算がこれを下回ると Rerank/Rewrite 等をスキップ |
-| `FORCE_GENERATE_THRESHOLD_MS` | `1500` | 残り予算がこれを下回ると強制的に Generate へ遷移 |
-| `RETRIEVAL_CRITIC_SKIP_CONFIDENCE_PCT` | `85` | 確信度が 85% 超の場合に Retrieval Critic をスキップ |
-| `ANSWER_CRITIC_SKIP_CONFIDENCE_PCT` | `80` | 確信度が 80% 超の場合に Answer Critic をスキップ |
-| **Timeouts (ms)** | | |
-| `STAGE_TIMEOUT_MS_ROUTER` | `1800` | Router ノードのタイムアウト |
-| `STAGE_TIMEOUT_MS_RETRIEVAL_CRITIC` | `2500` | Retrieval Critic のタイムアウト |
-| `STAGE_TIMEOUT_MS_ANSWER_CRITIC` | `2500` | Answer Critic のタイムアウト |
-| `STAGE_TIMEOUT_MS_DECOMPOSE` | `1800` | Decompose ノードのタイムアウト |
-| `STAGE_TIMEOUT_MS_REWRITE_SUBQUERY` | `1800` | Rewrite ノードのタイムアウト |
-| `STAGE_TIMEOUT_MS_RERANK` | `2500` | Reranker のタイムアウト |
+主要な設定カテゴリは以下です。
+
+| カテゴリ | 主な設定内容 |
+| :--- | :--- |
+| LLM / Tracing | OpenAI APIキー、LangSmith tracing、project設定 |
+| Database / Search | PostgreSQL / pgvector接続、Hybrid Search、TopK制御 |
+| Agentic Control Plane | Agentic RAG、Router、Reranker、Answer Critic、Retry制御 |
+| Prompt Ops | Prompt namespace、prewarm、failure TTL |
+| Budget / Timeout | 複雑検索、Rerank、Critic、Rewrite、Generateの予算・タイムアウト |
+
+詳細な環境変数一覧とデフォルト値は [`docs/configuration.md`](docs/configuration.md) を参照してください。
+
+各デフォルト値は個人開発・検証環境向けの初期値であり、本番利用時は対象データ、レイテンシ要件、APIコスト、評価結果に応じて調整する想定です。
 
 ---
 
