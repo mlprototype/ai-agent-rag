@@ -4,17 +4,17 @@
 
 ---
 
-## ポートフォリオ内での位置づけ
+## 関連プロジェクトと設計上の位置づけ
 
 本リポジトリは、生成AIを業務システムへ安全に導入するための
-「品質保証 × 動的制御 × 運用統治」3層構成のポートフォリオの
-**第2弾「動的制御」** に位置づけられます。
+「品質保証・動的制御・運用統治」からなる3層アーキテクチャのうち、
+**動的制御レイヤー** を担います。
 
-| 位置 | リポジトリ | レイヤー |
-|---|---|---|
-| 第1弾 | [Retrieval品質管理システム](https://github.com/mlprototype/spec-rag-qa) | 品質保証 |
-| **第2弾** | **本リポジトリ（Agentic RAG with Control Plane）** | **動的制御** |
-| 第3弾 | [Policy-Aware Multi-LLM Gateway](https://github.com/mlprototype/policy-aware-llm-gateway) | 運用統治 |
+| プロジェクト | 主な責務 |
+|---|---|
+| [Retrieval品質管理システム](https://github.com/mlprototype/spec-rag-qa) | 品質保証 |
+| **本リポジトリ（Agentic RAG with Control Plane）** | **動的制御** |
+| [Policy-Aware Multi-LLM Gateway](https://github.com/mlprototype/policy-aware-llm-gateway) | 運用統治 |
 
 ---
 
@@ -79,7 +79,6 @@ flowchart TD
     
     subgraph Adapters ["Adapters Layer (Framework Adapter)"]
         RetrievalTool["retrieval_tool<br/>(LangChain @tool, 補助アダプタ)"]
-        Calculator["calculate_expression<br/>(計算ヘルパー)"]
     end
     
     subgraph Infrastructure ["Infrastructure Layer (DB・外部依存)"]
@@ -123,7 +122,7 @@ flowchart TD
 | **API / Interface** | 外部入力を受け付け、Application層を呼び出す | FastAPI endpoints, CLI | `api/`, `main.py` |
 | **Application** | ユースケースの実現。Graph 実行・DTO定義・Citation抽出・要約ログ出力を担当 | `ChatService`, `graph.py`, `ChatRequest/Response`, `ConversationMemory` IF | `application/` |
 | **Domain** | ビジネスロジック（router / retrieval / compare / critic / prompt ops / ingestion） | `AgentRouter`, `HeuristicRouter`, `RetrievalService`, `QueryDecomposer`, `ResultMerger`, `RetrievalCritic`, `AnswerCritic`, `coverage_checker`, `prompt_loader`, `prompt_sync`, `IngestionService` | `domain/` |
-| **Adapters** | フレームワークや補助関数への適合レイヤー | `retrieval_tool`, `calculate_expression` | `adapters/` |
+| **Adapters** | フレームワークや補助関数への適合レイヤー | `retrieval_tool` | `adapters/` |
 | **Infrastructure** | 特定技術（pgvector / PostgreSQL FTS / OpenAI / Cohere / unstructured 等）に依存する具象実装 | `vector_store`, `KeywordSearch`, `reranker`, `embedding`, `SemanticChunker`, `UnstructuredLoader`, `MemorySaver` | `infrastructure/` |
 
 ---
@@ -176,7 +175,6 @@ flowchart LR
 flowchart TD
     Q["ユーザークエリ"] --> H{"Heuristic<br/>Router"}
     H -->|"greeting / short"| D["direct_answer"]
-    H -->|"数式パターン"| D
     H -->|"売上 / 件数 / トップ等"| SQ["structured_query<br/>(structured_query_tool)"]
     H -->|"AとBの違い / vs"| CMP["compare<br/>(compare_fast_path)"]
     H -->|"Xとは / 定義"| DEF["definition<br/>(agentic_retrieval)"]
@@ -190,7 +188,6 @@ flowchart TD
 | `query_type` | `route` | 実行パス |
 | :--- | :--- | :--- |
 | `direct` | `direct_answer` | → generate → commit |
-| `calc` | `direct_answer` | → direct_generate（数式評価ユーティリティ） → commit |
 | `structured_query` | `structured_query_tool` | → parse → validate → execute → commit |
 | `compare` | `agentic_retrieval` | → **compare_fast_path**（下記参照） |
 | `definition` | `agentic_retrieval` | → retrieve → retrieval_critic → generate → answer_critic → commit |
@@ -204,10 +201,7 @@ Agentic RAG の価値は、Control Plane（ルーター）が質問 of 性質に
 - **structured_query_tool**: 構造化データ（売上、在庫、注文件数などの業務データ）向け。SQLite 上で安全な集計 SQL を実行し、確定的な値を返します。
 - **compare_fast_path**: 比較専用（AとBの違いなど）。対象を特定して並列検索を行う特化型経路です。
 
-**数式評価 (calc) の扱いについて**:
-`calc` は、質問自体が純粋な算術計算（例：「1+1は？」）である場合に適用されます。以前は独立した `calculator` ルートを使用していましたが、現在は `direct_answer` ルート内の**決定論的な数式評価ユーティリティ**として整理されています。これにより、LLM の推論エラーを避けつつ、グラフ構造を簡素化しています。
-
-一方で、データセットに基づく業務的な集計（ランキング、件数、平均など）は、すべて `structured_query_tool` が担当します。
+データセットに基づく業務的な集計（ランキング、件数、平均など）は、すべて `structured_query_tool` が担当します。外部検索を必要としない一般的な問い合わせは `direct_answer` で自然に回答します。
 
 `ROUTER_HEURISTIC_CONFIDENCE_THRESHOLD_PCT` の既定値は `85` です。LLM Router が timeout / error の場合は `route=fallback_retrieval` に落とし、`retrieve_once → generate → commit` の単発経路で応答します。
 
@@ -369,7 +363,7 @@ class ChatResponse(BaseModel):
     warning: Optional[str] = None
 ```
 
-`direct_answer` では `sources` / `confidence` が省略される場合があります。`calculator` は `confidence=1.0`、検索系ルートでは `warning` に縮退メッセージが入ることがあります。
+`direct_answer` では `sources` / `confidence` が省略される場合があります。検索系ルートでは `warning` に縮退メッセージが入ることがあります。
 
 ---
 
@@ -525,6 +519,16 @@ uv run python main.py
 
 # テストを流す場合
 uv run pytest
+```
+
+### 🚀 面接・デモ用クイックガイド
+面接時などに数分で主要機能（挨拶、SQLite集計、比較、定義、新規ファイルのインジェストと回答）を実演するための**全自動デモ実行スクリプト**および**詳細なデモガイド**を用意しています。
+
+詳細は [FASTAPI_DEMO_GUIDE.md](file:///Users/apple/develop/ai-agent-rag/FASTAPI_DEMO_GUIDE.md) を参照してください。
+
+```bash
+# FastAPIサーバーを起動した状態で、別ターミナルで実行するだけでデモが全自動で流れます
+uv run python scripts/demo_requests.py
 ```
 
 ---

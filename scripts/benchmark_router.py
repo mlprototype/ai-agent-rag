@@ -15,8 +15,6 @@ import uuid
 DATASET = [
     # Direct
     "こんにちは", "hello!", "おはよう", "ありがとう", "こんばんは、今日は疲れたよ",
-    # Calc
-    "1足す1は", "5 * 52", "100の10%は？", "2+3*4", "1000わる3はいくつ",
     # Definition
     "RAGとは何ですか", "pgvectorって何", "LangChainの意味を教えて", "ベクトル検索の定義", "BM25とは",
     # Compare

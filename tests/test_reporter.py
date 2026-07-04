@@ -120,13 +120,13 @@ class TestReporter(unittest.TestCase):
         """structured_query_tool 向けの専用分析ロジックをテストします。"""
         # current に structured_query_tool のレコードを追加
         sq_record = EvalRecord(
-            query="SQ1", query_type="calc", route="structured_query_tool", 
+            query="SQ1", query_type="structured_query", route="structured_query_tool",
             answer="42", confidence=1.0, latency_ms=500, similarity=1.0,
             response_generated=True, answer_ok=True, reason_code="SUCCESS",
             source_name="SQLite (sales)"
         )
         blocked_record = EvalRecord(
-            query="SQ2", query_type="calc", route="structured_query_tool", 
+            query="SQ2", query_type="structured_query", route="structured_query_tool",
             answer="", confidence=0.0, latency_ms=100, similarity=0.0,
             response_generated=False, answer_ok=False, reason_code="validation_failed",
             source_name="SQLite (sales)"

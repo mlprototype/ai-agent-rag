@@ -12,7 +12,7 @@
 ```mermaid
 flowchart LR
     Q["ユーザークエリ"] --> R{"Heuristic + LLM<br/>2段階 Router"}
-    R -->|挨拶 / 雑談 / 数式| D["Direct Answer"]
+    R -->|挨拶 / 雑談| D["Direct Answer"]
     R -->|非構造化検索| RAG["Agentic RAG<br/>(Hybrid Search + Critic)"]
     R -->|集計・ランキング| SQ["Structured Query<br/>(SQLite / Read-only SQL)"]
     R -->|AとBの比較| CMP["Compare Fast-Path<br/>(並列検索 + 4観点整理)"]

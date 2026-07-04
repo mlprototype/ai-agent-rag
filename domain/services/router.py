@@ -1,12 +1,11 @@
 """
-ユーザーからの質問を分析し、最適な回答生成ルート(直接回答、計算、検索など)を決定するルーティング処理を担当するファイルです。
-エージェントの処理パイプラインの入り口に位置し、後続のワークフロー(RAG、計算ツールなど)を振り分けます。
+ユーザーからの質問を分析し、最適な回答生成ルート（直接回答、構造化クエリ、検索）を決定するルーティング処理を担当するファイルです。
+エージェントの処理パイプラインの入り口に位置し、後続のワークフローを振り分けます。
 入力としてユーザーの質問文字列を受け取り、出力として決定したルートや確信度を含む RouteDecision オブジェクトを返します。
 ヒューリスティック(ルールベース)とLLMによる判定を組み合わせ、LLMのエラーや遅延時には安全なフォールバックルートへ移行するよう設計されています。
 """
 import asyncio
 import logging
-import re
 from typing import Literal
 
 from langchain_core.prompts import ChatPromptTemplate
@@ -29,7 +28,6 @@ class LLMRouteDecision(BaseModel):
 class AgentRouter:
     _chain = None
     _PROMPT_NAME = ROUTER_PROMPT
-    _CALC_PATTERN = re.compile(r"[\d\s\.\(\)\+\-\*/%]+")
     _SIMPLE_PATTERNS = (
         "こんにちは",
         "こんばんは",
@@ -53,8 +51,8 @@ class AgentRouter:
                 (
                     "system",
                     "あなたは問い合わせルーターです。ユーザーの最新メッセージを以下の3分類のいずれかに必ず分類してください。\n"
-                    "- direct_answer: 挨拶、雑談、一般的な短い会話、外部検索が不要な質問（算術計算や単純な数式評価を含む）\n"
-                    "- structured_query_tool: 売上、在庫、注文件数などのデータセットに関する集計、問い合わせ、操作全般。calc（数式評価）とは明確に区別し、DBアクセスが必要な場合のみこちらを選択してください。\n"
+                    "- direct_answer: 挨拶、雑談、一般的な短い会話、外部検索が不要な質問\n"
+                    "- structured_query_tool: 売上、在庫、注文件数など、業務データに対する集計、問い合わせ、操作全般\n"
                     "- agentic_retrieval: 検索済みナレッジや複数観点の取得が必要な質問\n"
                     "JSONで返し、route と短い reason を含めてください。"
                 ),
@@ -98,11 +96,7 @@ class AgentRouter:
             elif llm_decision.route == "structured_query_tool":
                 query_type = "structured_query"
             elif llm_decision.route == "direct_answer":
-                # 数式が含まれている場合は calc と判定し、ノード側で決定論的評価を行う
-                if cls._CALC_PATTERN.match(query) and any(ch.isdigit() for ch in query):
-                    query_type = "calc"
-                else:
-                    query_type = "direct"
+                query_type = "direct"
                 
             return RouteDecision(
                 query_type=query_type, # type: ignore

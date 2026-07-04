@@ -3,7 +3,6 @@
 # 設計上の注意点: タイムアウトや予算枯渇時には各段階でフォールバックを挟み、処理を継続する
 import asyncio
 import logging
-import re
 import time
 from typing import Any
 
@@ -12,7 +11,6 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 
-from domain.services.expression_evaluator import calculate_expression
 from application.agents.state import AgentState
 from config.settings import get_settings
 from domain.models.retrieval_models import RetrievedChunk
@@ -46,7 +44,6 @@ _SETTINGS = get_settings()
 _RERANKER = build_reranker()
 _GENERATE_CHAIN = None
 _DIRECT_CHAIN = None
-_CALC_PATTERN = re.compile(r"[\d\s\.\(\)\+\-\*/%足すたすプラス引くひくマイナスかける掛けるタイムズ割るわるスラッシュ]+")
 # タイムアウト閾値: これ未満の残予算では完了が見込めないためタイムアウトとして扱う
 _MIN_STAGE_TIMEOUT_MS = 250
 _HIGH_COMPLEXITY_HINTS = (
@@ -98,7 +95,7 @@ def _get_generate_chain():
                 "[その他のルール]\n"
                 "内部のルーティング、critic、sub-query、再試行については一切言及しないでください。\n"
                 "根拠がある文には [1], [2] のような citation を付けてください。\n"
-                "route が direct_answer の場合は自然な会話として回答し、calculator の場合は計算結果を述べてください。"
+                "route が direct_answer の場合は自然な会話として回答してください。"
             ),
             (
                 "system",
@@ -198,8 +195,6 @@ def _infer_query_type(
     coverage_intent: str | None,
 ) -> str:
     lowered = query.strip().lower()
-    if route == "calculator" or (any(token in query for token in ("+", "-", "*", "/", "%")) and any(ch.isdigit() for ch in query)):
-        return "calc"
     if coverage_intent == "compare" or any(token in lowered for token in _COMPARE_TYPE_HINTS):
         return "compare"
     if any(token in query for token in _DEFINITION_TYPE_HINTS):
@@ -470,15 +465,6 @@ def _router_timeout_seconds() -> float:
     return min(_SETTINGS.router_timeout_seconds, _SETTINGS.router_budget_ms / 1000)
 
 
-# 関数の役割: 質問文字列からの数式抽出
-# 入出力: 質問文字列を受け取り、数式文字列を返す
-# state更新: 更新なし
-# フォールバック: 抽出不能時は元のクエリをそのまま返す
-def _extract_expression(query: str) -> str:
-    candidate = "".join(_CALC_PATTERN.findall(query)).strip()
-    return candidate or query.strip()
-
-
 # 関数の役割: ワークフロー初期化
 # 入出力: AgentStateを受け取り、更新差分を返す
 # state更新: original_query, initial_budget_ms などを設定
@@ -609,9 +595,6 @@ async def router_node(state: AgentState) -> dict[str, Any]:
         "fallback_stages": _append_stage(state.get("fallback_stages"), "router") if decision.reason.endswith("_fallback") else state.get("fallback_stages", []),
         **_budget_runtime_updates(state, route=decision.route),
     }
-
-
-# calculator_node and its dependencies are moved to direct_generate_node for simplification
 
 
 # 関数の役割: 単一クエリによる検索の実行
@@ -1059,28 +1042,6 @@ async def generate_node(state: AgentState) -> dict[str, Any]:
 # フォールバック: 特になし
 async def direct_generate_node(state: AgentState) -> dict[str, Any]:
     runtime_updates = _budget_runtime_updates(state, checkpoint="before_generate")
-    
-    # query_type が calc の場合、決定論的な expression_evaluator を使用する
-    if state.get("query_type") == "calc":
-        expression = _extract_expression(state["original_query"])
-        try:
-            value = calculate_expression(expression)
-            if value.is_integer():
-                rendered = str(int(value))
-            else:
-                rendered = str(round(value, 6))
-            return {
-                "answer": f"計算結果は {rendered} です。",
-                "confidence": 1.0,
-                "answer_ok": True,
-                "warning": None,
-                "missing_aspects": [],
-                "answer_critic_skipped_reason": None,
-                **runtime_updates,
-            }
-        except Exception:
-            # 評価失敗時は LLM に委ねるか、エラーを返す
-            pass
 
     chain = _get_direct_chain()
     logger.info(f"Generating direct answer: route={state['route']}")
@@ -1097,9 +1058,6 @@ async def direct_generate_node(state: AgentState) -> dict[str, Any]:
         "answer_critic_skipped_reason": None,
         **runtime_updates,
     }
-
-
-# calc_generate_node is removed in favor of integrated logic in direct_generate_node
 
 
 # 関数の役割: 構造化クエリルート向けの回答生成
