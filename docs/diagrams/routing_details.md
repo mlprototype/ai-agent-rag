@@ -7,7 +7,7 @@ flowchart TD
     Start([ルーティング開始]) --> Preprocess[入力クエリの前処理<br/>複雑度・種別の事前推定]
     Preprocess --> Heuristic[ヒューリスティック判定<br/>ルールベースでの意図確認]
     
-    Heuristic --> H_Check{明らかな意図か？<br/>計算式や明確な比較等}
+    Heuristic --> H_Check{明らかな意図か？<br/>業務集計や明確な比較等}
     H_Check -->|Yes: LLM不要| RouteConfirm[ルート確定]
     
     H_Check -->|No: 要詳細分析| LLMRouter[必要時のみLLMルーティング<br/>GPTによる意図判定]
@@ -19,7 +19,7 @@ flowchart TD
     RouteConfirm --> Dispatch
     FallbackRoute --> Dispatch
     
-    Dispatch{各ルートへ分岐<br/>direct / calc / compare / agentic / fallback} --> End([次ノードへ])
+    Dispatch{各ルートへ分岐<br/>direct / structured_query / compare / definition / retrieval_complex} --> End([次ノードへ])
 ```
 
 #### 補足

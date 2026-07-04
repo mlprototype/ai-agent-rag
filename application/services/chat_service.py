@@ -92,8 +92,7 @@ class ChatService:
         if route == "direct_answer":
             sources = None
             filtered_count = 0
-            # calc の場合は確信度 1.0, 挨拶などは None
-            confidence = round(final_state.get("confidence", 0.8), 2) if query_type == "calc" else None
+            confidence = None
             warning = None
             source_name = None
         elif route == "structured_query_tool":

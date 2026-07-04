@@ -10,8 +10,8 @@ flowchart TD
     Route -->|ルート判定| Branch{経路の大きな振り分け}
     
     subgraph 軽量経路
-        Branch -->|計算が必要| Calc[計算処理パス]
         Branch -->|単純な質問| Direct[直答パス]
+        Branch -->|業務データ集計| Structured[構造化クエリパス]
     end
 
     subgraph 検索系経路
@@ -20,8 +20,8 @@ flowchart TD
         Branch -->|複雑な質問| Agentic[複雑な検索・評価ループ]
     end
 
-    Calc --> Gen[回答の生成]
     Direct --> Gen
+    Structured --> Commit
     Fallback --> Gen
     Agentic --> Gen
     

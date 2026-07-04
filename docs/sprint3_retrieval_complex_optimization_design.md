@@ -18,7 +18,7 @@ retrieval_complex 経路において、Timeout / Budget / Fallback を段階的�
 
 *   compare fast-path の再設計
 *   heuristic router の再設計
-*   definition / direct / calc の route 変更
+*   definition / direct / structured_query の route 変更
 *   LLM モデル変更
 
 ## 現状課題

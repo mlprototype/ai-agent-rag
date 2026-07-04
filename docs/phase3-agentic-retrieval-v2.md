@@ -24,7 +24,7 @@ v2 の Agentic RAG は高精度でしたが、「どんな質問でも一律で�
 
 ### ❷ Heuristic Routing と Query Classification
 全てのクエリをLLM Routerに通すのではなく、事前にルールベース（Heuristic）でクエリ種別を判別することでレイテンシを削減します。
-- **分類:** `calc`, `compare`, `definition`, `direct`, `retrieval_complex`
+- **分類:** `direct`, `structured_query`, `compare`, `definition`, `retrieval_complex`
 - **複雑度:** `low`, `medium`, `high` （文字数や「比較」「なぜ」などのキーワードで判定）
 
 ### ❸ 比較（Compare）に特化した専用パイプライン
@@ -44,10 +44,11 @@ flowchart TD
     Start(["ユーザーの質問"]) --> Init["Initialize Node\n(複雑度・初期予算計算)"]
     Init --> Router{"AgentRouter\n(Heuristic + LLM)"}
 
-    Router -->|"calc"| Calc["Calculator Node"]
     Router -->|"direct"| Gen["Generate Node"]
+    Router -->|"structured_query"| SQ["Structured Query Node"]
     Router -->|"compare"| CompEx["Compare Extract"]
     Router -->|"retrieval"| R0
+    SQ --> Commit
 
     %% Compare 専用フロー
     subgraph Compare Pipeline
@@ -132,7 +133,7 @@ class AgentState(TypedDict, total=False):
     sources: list[dict[str, Any]]
     
     # --- v3 Control Plane 新規フィールド ---
-    query_type: Literal["direct", "calc", "compare", "definition", "retrieval_complex"]
+    query_type: Literal["direct", "structured_query", "compare", "definition", "retrieval_complex"]
     routing_layer: Literal["heuristic", "llm", "fallback"]
     query_complexity: Literal["low", "medium", "high"]
     

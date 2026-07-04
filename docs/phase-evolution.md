@@ -20,7 +20,7 @@
 
 | 機能 | 概要 |
 | :--- | :--- |
-| **動的ルーティング（Agent Routing）** | Heuristic + LLM Router が `direct_answer` / `calculator` / `structured_query_tool` / `agentic_retrieval` / `fallback_retrieval` を判定 |
+| **動的ルーティング（Agent Routing）** | Heuristic + LLM Router が `direct_answer` / `structured_query_tool` / `agentic_retrieval` / `fallback_retrieval` を判定 |
 | **Clean Architecture** | 業務ロジック、アダプター、インターフェースを疎結合にレイヤー分離 |
 | **リアルタイム生成（StreamingResponse）** | FastAPI `StreamingResponse` による `text/event-stream` 配信。通常は `generate` ノードの出力を逐次返却 |
 | **耐障害性（Stage Timeout & Retry）** | 外部API遅延に対する `asyncio.wait_for` タイムアウト（5秒）とフォールバックエラー処理 |
@@ -57,7 +57,7 @@ Phase 3 では、Agentic RAG の制御面を強化し、ルーティング、比
 
 | 機能 | 概要 |
 | :--- | :--- |
-| **Heuristic Router** | ルールベースの事前分類で `direct` / `calc` / `definition` / `compare` を高確信で即座に判定 |
+| **Heuristic Router** | ルールベースの事前分類で `direct` / `structured_query` / `definition` / `compare` を高確信で即座に判定 |
 | **LLM Router Skip** | Heuristic hit 時は LLM Router をスキップし、router timeout と不要な fallback を削減 |
 | **Observability** | routing decision の structured observability を追加 |
 

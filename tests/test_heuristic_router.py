@@ -25,20 +25,6 @@ class TestHeuristicRouter(unittest.TestCase):
             decision = HeuristicRouter.route(q)
             self.assertIsNone(decision, f"Should be None: {q}")
 
-    def test_calc_expressions(self):
-        valid = ["1+1", " 2 * 3 / 4 ", "1足す1は", "1+1は？"]
-        for q in valid:
-            decision = HeuristicRouter.route(q)
-            self.assertIsNotNone(decision, f"Failed on {q}")
-            self.assertEqual(decision.query_type, "calc", f"Failed on {q}")
-            self.assertEqual(decision.route, "direct_answer", f"Failed on {q}")
-
-    def test_calc_false_positives(self):
-        invalid = ["1+1の仕組みを教えて", "2023年の売上は"]
-        for q in invalid:
-            decision = HeuristicRouter.route(q)
-            self.assertIsNone(decision, f"Should be None: {q}")
-
     def test_definition(self):
         valid = ["RAGとは何ですか", "LLMの意味を教えて", "ベクトル検索の定義", "APIって何", "RAGとは"]
         for q in valid:

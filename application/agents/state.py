@@ -16,7 +16,7 @@ class AgentState(TypedDict, total=False):
     router_uncertain: bool
 
     # クエリ解析・カバレッジ情報
-    query_type: Literal["direct", "calc", "structured_query", "compare", "definition", "retrieval_complex"]
+    query_type: Literal["direct", "structured_query", "compare", "definition", "retrieval_complex"]
     routing_layer: Literal["heuristic", "llm", "fallback"]
     route_decision_source: Literal["heuristic_match", "llm_success", "llm_timeout_fallback", "llm_error_fallback"]
     heuristic_matched: bool

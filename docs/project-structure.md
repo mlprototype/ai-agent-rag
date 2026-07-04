@@ -64,7 +64,6 @@ ai-agent-rag/
 │       ├── query_rewriter.py                #   LLM クエリ書き換え
 │       ├── hybrid_search.py                 #   Vector + Keyword 統合検索
 │       ├── compressor.py                    #   Extractive Compression
-│       ├── expression_evaluator.py          #   決定論的な数式評価ユーティリティ
 │       ├── structured_query.py              #   Structured Query オーケストレーション
 │       ├── structured_query_validator.py    #   SQL インジェクション・セマンティック検証
 │       ├── structured_query_sql_builder.py  #   SQLite 用 SQL 生成ロジック
@@ -76,8 +75,7 @@ ai-agent-rag/
 │
 ├── adapters/                                # --- Adapters Layer ---
 │   └── tools/
-│       ├── retrieval_tool.py                #   LangChain @tool ラッパー（検索）
-│       └── calculator.py                    #   LangChain @tool ラッパー（計算）
+│       └── retrieval_tool.py                #   LangChain @tool ラッパー（検索）
 │
 ├── infrastructure/                          # --- Infrastructure Layer ---
 │   ├── ingestion/

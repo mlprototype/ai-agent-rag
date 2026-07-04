@@ -18,7 +18,7 @@
 | `routing_layer` | `heuristic` / `llm` / `fallback` |
 | `route_decision_source` | `heuristic_match` / `llm_success` / `llm_timeout_fallback` / `llm_error_fallback` |
 | `heuristic_matched` | Heuristic ルールにマッチしたか |
-| `heuristic_rule` | マッチしたルール名（`direct_greeting`, `calc_expression`, `compare_keywords`, `definition_keywords`） |
+| `heuristic_rule` | マッチしたルール名（`direct_greeting`, `structured_query_keywords`, `compare_keywords`, `definition_keywords`） |
 | `route_decision_latency_ms` | ルーティング解決にかかった時間 |
 | `route_decision_confidence` | 判定の確信度 |
 | `llm_router_invoked` | LLM Router が呼び出されたか |

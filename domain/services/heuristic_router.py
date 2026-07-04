@@ -1,14 +1,13 @@
 # ファイルの責務: 正規表現やキーワードマッチによる高速なルーティング判定
 # 主な入出力: 質問文字列を受け取り、合致した場合はRouteDecisionを返す
 # 設計上の注意点: LLM APIの呼び出しコストと遅延を削減するため、明確なパターンの場合のみルートを決定する
-import re
 from typing import Literal
 from pydantic import BaseModel
 
 from domain.services.compare_intent import extract_targets
 
 class RouteDecision(BaseModel):
-    query_type: Literal["direct", "calc", "structured_query", "compare", "definition", "retrieval_complex"]
+    query_type: Literal["direct", "structured_query", "compare", "definition", "retrieval_complex"]
     route: Literal["direct_answer", "structured_query_tool", "agentic_retrieval", "fallback_retrieval"]
     routing_layer: Literal["heuristic", "llm", "fallback"]
     source: Literal["heuristic_match", "llm_success", "llm_timeout_fallback", "llm_error_fallback"]
@@ -20,10 +19,6 @@ class RouteDecision(BaseModel):
 
 
 class HeuristicRouter:
-    _CALC_PATTERN = re.compile(r"^[\d\s\.\(\)\+\-\*/%]+\s*(=|＝)?\s*(は|は？|です|ですか|はいくつ|？|\?)?\s*$")
-    _CALC_SYMBOL_PATTERN = re.compile(r"[\+\-\*/%]")
-    _CALC_JP_PATTERN = re.compile(r"^[\d\s\.]+(足す|たす|引く|ひく|かける|わる|割る|プラス|マイナス)[\d\s\.]+\s*(は|は？|です|ですか|はいくつ|？|\?|＝\?|=\?)?\s*$")
-    
     _DIRECT_GREETINGS = [
         "こんにちは", "こんばんは", "おはよう", "ありがとう", "thank you", "thanks", "hello", "hi"
     ]
@@ -57,16 +52,7 @@ class HeuristicRouter:
             if has_biz and (has_agg or has_write):
                 return cls._build_decision("structured_query", "structured_query_tool", "structured_query_keywords", 0.95)
 
-        # 3. Calc (Shrunk to deterministic utility in direct_answer)
-        calc_candidate = "".join(re.findall(r"[\d\s\.\(\)\+\-\*/%]+", query)).strip()
-        if cls._CALC_JP_PATTERN.match(normalized):
-            return cls._build_decision("calc", "direct_answer", "calc_expression_jp", 1.0)
-        elif calc_candidate and any(ch.isdigit() for ch in calc_candidate) and cls._CALC_SYMBOL_PATTERN.search(calc_candidate):
-            # If the user's explicit intent is just to calculate this formula
-            if cls._CALC_PATTERN.match(normalized):
-                return cls._build_decision("calc", "direct_answer", "calc_expression", 1.0)
-
-        # 4. Compare
+        # 3. Compare
         if enable_compare:
             has_compare = any(k in normalized for k in cls._COMPARE_KEYWORDS)
             has_and = any(k in normalized for k in ["と", "vs", "and"])
@@ -78,7 +64,7 @@ class HeuristicRouter:
                     if targets is not None:
                         return cls._build_decision("compare", "agentic_retrieval", "compare_keywords", 0.9)
 
-        # 5. Definition
+        # 4. Definition
         # "Xとは何ですか", "Xとは"
         has_def = any(k in normalized for k in cls._DEFINITION_KEYWORDS)
         if has_def:

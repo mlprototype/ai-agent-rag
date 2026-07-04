@@ -11,13 +11,13 @@ class TestRouterService(unittest.IsolatedAsyncioTestCase):
     async def test_heuristic_hit_no_llm_call(self, mock_hr_route):
         # Mock heuristic to return a hit
         mock_decision = MagicMock()
-        mock_decision.query_type = "calc"
+        mock_decision.query_type = "direct"
         mock_decision.route = "direct_answer"
-        mock_decision.confidence = 1.0
+        mock_decision.confidence = 0.9
         mock_hr_route.return_value = mock_decision
 
         with patch.object(AgentRouter, '_get_chain') as mock_get_chain:
-            decision = await AgentRouter.route("1+1")
+            decision = await AgentRouter.route("こんにちは")
             
             # Heuristic should be called
             mock_hr_route.assert_called_once()
