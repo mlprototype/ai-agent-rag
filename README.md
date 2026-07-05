@@ -53,66 +53,61 @@
 
 ## アーキテクチャ
 
-依存性の逆転原則（DIP）に基づき、各責務を明確にレイヤー分けしています。これにより、特定のDB（pgvector）やLLMへの依存を最小限に抑え、高いテスト容易性と拡張性を確保しています。
+本プロジェクトは、質問内容に応じて Direct Answer / Agentic Retrieval / Structured Query / Compare Fast-Path / Fallback を動的に切り替える Control Plane 型のRAGアーキテクチャです。
+
+LangGraph Workflow がルーティング・予算管理・フォールバックを制御し、各実行経路の処理は Domain / Infrastructure に分離しています。これにより、特定のDBやLLMに依存しすぎず、テスト容易性と拡張性を確保しています。
 
 ```mermaid
-flowchart TD
-    CLI["main.py (CLI)"]
-    API["api/main.py (FastAPI)"]
-    
-    subgraph Application ["Application Layer (ユースケース・ワークフロー)"]
-        ChatService["ChatService<br/>(Citation抽出 / Confidence取得 / Summaryログ)"]
-        Agent["LangGraph Workflow<br/>(router / critic / budget control)"]
-        DTO["ChatRequest / ChatResponse / Source"]
-        Memory_IF["ConversationMemory<br/>(Abstract Interface)"]
-    end
-    
-    subgraph Domain ["Domain Layer (ビジネスロジック)"]
-        Router["AgentRouter / HeuristicRouter"]
-        RetrievalService["RetrievalService<br/>(rewrite / hybrid / compress)"]
-        QueryPlanner["QueryDecomposer / ResultMerger"]
-        Critics["RetrievalCritic / AnswerCritic"]
-        Compare["compare_* / coverage_checker"]
-        PromptOps["prompt_loader / prompt_registry"]
-        IngestionService["IngestionService<br/>(取り込みオーケストレーション)"]
-    end
-    
-    subgraph Adapters ["Adapters Layer (Framework Adapter)"]
-        RetrievalTool["retrieval_tool<br/>(LangChain @tool, 補助アダプタ)"]
-    end
-    
-    subgraph Infrastructure ["Infrastructure Layer (DB・外部依存)"]
-        VectorStore[("pgvector<br/>(vector_store.py)")]
-        KeywordSearchDB["KeywordSearch<br/>(PostgreSQL FTS)"]
-        Reranker["Reranker<br/>(Passthrough / Cohere)"]
-        Embedding["OpenAI Embeddings<br/>(text-embedding-3-small)"]
-        Chunker["SemanticChunker<br/>(chunking.py)"]
-        Loader["UnstructuredLoader<br/>(unstructured_loader.py)"]
-        MemoryImpl["InMemoryConversationMemory<br/>(MemorySaver)"]
+flowchart TB
+    classDef entry fill:#eef2ff,stroke:#6366f1,color:#312e81
+    classDef app fill:#ecfeff,stroke:#06b6d4,color:#164e63
+    classDef domain fill:#f0fdf4,stroke:#22c55e,color:#14532d
+    classDef infra fill:#f1f5f9,stroke:#64748b,color:#0f172a
+
+    User(["ユーザー"]):::entry --> Entry["CLI / FastAPI"]:::entry
+
+    subgraph App["🧩 Application Layer"]
+        Chat["ChatService"]:::app
+        Graph["LangGraph Workflow<br/>route / budget / fallback control"]:::app
+        Chat --> Graph
     end
 
-    CLI --> ChatService
-    API --> ChatService
-    API -->|"/ingest/*"| IngestionService
-    ChatService --> Agent
-    Agent --> Router
-    Agent --> RetrievalService
-    Agent --> QueryPlanner
-    Agent --> Critics
-    Agent --> Compare
-    Agent --> Compare
-    RetrievalTool --> RetrievalService
-    PromptOps -.-> Agent
-    RetrievalService --> VectorStore
-    RetrievalService --> KeywordSearchDB
-    Agent --> Reranker
-    IngestionService --> Loader
-    IngestionService --> Chunker
-    Chunker --> Embedding
-    IngestionService --> VectorStore
-    Agent -.->|checkpointer| MemoryImpl
-    Memory_IF -.->|implements| MemoryImpl
-    VectorStore --> Embedding
+    subgraph Domain["⚙️ Domain Layer"]
+        Router["AgentRouter<br/>Heuristic → LLM Router"]:::domain
+        Direct["Direct Answer"]:::domain
+        Retrieval["Agentic Retrieval<br/>rewrite → hybrid search → critic → generate"]:::domain
+        Structured["Structured Query<br/>parse → validate → SELECT only"]:::domain
+        Compare["Compare Fast-Path<br/>extract → parallel retrieve → merge"]:::domain
+    end
+
+    subgraph Infra["🗄️ Infrastructure Layer"]
+        Postgres[("PostgreSQL<br/>pgvector + FTS")]:::infra
+        SQLite[("SQLite<br/>structured data")]:::infra
+        LLM["LLM / Embedding / Rerank APIs"]:::infra
+        Memory["Conversation Memory<br/>MemorySaver"]:::infra
+    end
+
+    Entry --> Chat
+    Graph --> Router
+
+    Router -->|"simple / greeting"| Direct
+    Router -->|"document QA"| Retrieval
+    Router -->|"sales / count / ranking"| Structured
+    Router -->|"A vs B"| Compare
+    Router -->|"timeout / low confidence"| Retrieval
+
+    Retrieval --> Postgres
+    Retrieval --> LLM
+    Structured --> SQLite
+    Compare --> Retrieval
+
+    Graph -.-> Memory
+    Direct --> Graph
+    Retrieval --> Graph
+    Structured --> Graph
+    Compare --> Graph
+
+    Graph --> User
 ```
 
 ### レイヤー責務一覧
@@ -122,19 +117,19 @@ flowchart TD
 | **API / Interface** | 外部入力を受け付け、Application層を呼び出す | FastAPI endpoints, CLI | `api/`, `main.py` |
 | **Application** | ユースケースの実現。Graph 実行・DTO定義・Citation抽出・要約ログ出力を担当 | `ChatService`, `graph.py`, `ChatRequest/Response`, `ConversationMemory` IF | `application/` |
 | **Domain** | ビジネスロジック（router / retrieval / compare / critic / prompt ops / ingestion） | `AgentRouter`, `HeuristicRouter`, `RetrievalService`, `QueryDecomposer`, `ResultMerger`, `RetrievalCritic`, `AnswerCritic`, `coverage_checker`, `prompt_loader`, `prompt_sync`, `IngestionService` | `domain/` |
-| **Adapters** | フレームワークや補助関数への適合レイヤー | `retrieval_tool` | `adapters/` |
 | **Infrastructure** | 特定技術（pgvector / PostgreSQL FTS / OpenAI / Cohere / unstructured 等）に依存する具象実装 | `vector_store`, `KeywordSearch`, `reranker`, `embedding`, `SemanticChunker`, `UnstructuredLoader`, `MemorySaver` | `infrastructure/` |
 
 ---
 
 ## 設計思想
 
-中核の設計判断は、エージェントの思考プロセスと各種ツール（ビジネス機能）を完全に分離することです。
+中核の設計判断は、LangGraph Workflow を Control Plane として、質問ごとの実行経路を明示的に制御することです。
 
-- **思考フロー (Agent Layer)**: 言語モデルへのプロンプト指示、ルーティング判断、対話ステートの管理
-- **機能的ツール (Domain/Adapters Layer)**: 検索（Retrieval）、ドキュメント取り込み（Ingestion）などの具体的なビジネスロジック
+- **Control Plane (Application Layer)**: ルーティング、状態遷移、予算管理、フォールバック、回答コミットを制御
+- **Execution Paths (Domain Layer)**: Direct Answer / Agentic Retrieval / Structured Query / Compare Fast-Path の処理を分離
+- **External Dependencies (Infrastructure Layer)**: DB、Embedding、Reranker、Memory などの具象実装を分離
 
-この分離により、今後システムに新しいアクション（例：社内API呼び出し、スラック通知など）を追加する際も、既存のエージェントの思考フローを壊すことなく `Tool` として安全に横積み（Plug & Play）で拡張可能です。
+本プロジェクトの中心は汎用 Tool Calling ではなく、LangGraph による明示的な状態遷移と経路制御です。各経路の処理と外部依存を分離することで、実行フローを保ったままテスト・差し替え・拡張を行える構成にしています。
 また、runtime で参照する prompt は Git 管理された `prompts/` 配下のローカル snapshot を正本とし、LangSmith Hub は同期元として扱います。これにより、本番実行経路は Hub 障害の影響を受けず、prompt 更新はレビュー可能な差分として管理できます。FastAPI サーバ起動時は registry に登録された prompt を prewarm し、critical prompt がローカルで解決できない場合は `PREWARM_FAIL_FAST` に応じて fail-fast します。
 
 ---
@@ -436,11 +431,15 @@ class ChatResponse(BaseModel):
 
 | レイヤー | 主な責務 | 対応ディレクトリ |
 | :--- | :--- | :--- |
-| API層 | HTTP API、リクエスト受付、ルーティング | `api/` |
+| API / Interface層 | HTTP API、CLI、リクエスト受付 | `api/`, `main.py` |
 | Application層 | ユースケース、状態管理、レスポンス整形 | `application/` |
 | Domain層 | ルーティング、検索、Budget制御、Fallback、Critic、Structured Query | `domain/` |
 | Infrastructure層 | DB、Embedding、Vector Store、Keyword Search、Reranker、Memory | `infrastructure/` |
-| Adapter層 | LangChain toolなど外部I/Fとの接続 | `adapters/` |
+
+### 補助領域
+
+| 区分 | 主な責務 | 対応ディレクトリ |
+| :--- | :--- | :--- |
 | Evaluation | 評価実行、集計、レポート生成 | `evaluation/` |
 | Prompt Ops | プロンプト定義・同期・バージョン管理 | `prompts/`, `tools/` |
 

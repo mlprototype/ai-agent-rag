@@ -1,7 +1,7 @@
 <!--
 ファイルの責務:
 - 本システム（Agentic RAG with Control Plane）のディレクトリ構造およびファイル単位の構成を詳細に記述する。
-- 開発者向けに、どのディレクトリ・ファイルが何の責務（Domain, Application, API, Infrastructure, Adapters等）を担っているかを示す。
+- 開発者向けに、どのディレクトリ・ファイルが何の責務（Domain, Application, API, Infrastructure等）を担っているかを示す。
 - 注意点: 新規ファイル追加やリファクタリング時に、本構造に従って適切なレイヤーへファイルを配置すること。
 -->
 
@@ -72,10 +72,6 @@ ai-agent-rag/
 │       ├── structured_query_types.py        #   構造化クエリ用型定義
 │       ├── structured_query_datasets.py     #   デモ用テーブル定義・初期データ
 │       └── ingestion_service.py             #   取り込みオーケストレーション
-│
-├── adapters/                                # --- Adapters Layer ---
-│   └── tools/
-│       └── retrieval_tool.py                #   LangChain @tool ラッパー（検索）
 │
 ├── infrastructure/                          # --- Infrastructure Layer ---
 │   ├── ingestion/
