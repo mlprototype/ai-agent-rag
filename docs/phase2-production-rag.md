@@ -227,10 +227,8 @@ confidence = clamp(0.2 + 0.6*top1 + 0.2*margin, 0, 1)
 - `domain/services/ingestion_service.py`
   - 取り込みオーケストレーション
 
-### 6.3 Adapters / Infrastructure 層
+### 6.3 Infrastructure 層
 追加/変更候補:
-- `adapters/tools/retrieval_tool.py`
-  - JSON 出力対応
 - `infrastructure/ingestion/*`
   - unstructured パーサ
 - `infrastructure/retrieval/vector_store.py`
@@ -262,4 +260,3 @@ confidence = clamp(0.2 + 0.6*top1 + 0.2*margin, 0, 1)
 2. `Citation` の JSON スキーマ確定と Retrieval 出力変更
 3. `Ingestion Pipeline` の PoC (PDF/MD/HTML ingest)
 4. `Semantic Chunking` の導入・評価
-
