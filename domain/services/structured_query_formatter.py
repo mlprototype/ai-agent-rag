@@ -57,5 +57,6 @@ def format_structured_result(
         filters=intent.filters,
         rows=rows,
         summary=summary,
-        source_name=source_name
+        source_name=source_name,
+        target_dataset=intent.target_dataset,
     )

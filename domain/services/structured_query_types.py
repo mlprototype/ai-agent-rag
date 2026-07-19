@@ -21,6 +21,7 @@ class StructuredQueryResult(BaseModel):
     summary: str
     source_name: str
     error_message: str | None = None
+    target_dataset: str | None = None
 
 class ValidationResult(BaseModel):
     is_valid: bool

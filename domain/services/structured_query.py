@@ -31,7 +31,8 @@ def fail_safe_result(
         rows=[],
         summary=message,
         source_name="Unknown",
-        error_message=reason_code
+        error_message=reason_code,
+        target_dataset=intent.target_dataset if intent else None,
     )
 
 

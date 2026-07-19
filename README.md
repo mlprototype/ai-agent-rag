@@ -523,7 +523,7 @@ uv run pytest
 ### 🚀 面接・デモ用クイックガイド
 面接時などに数分で主要機能（挨拶、SQLite集計、比較、定義、新規ファイルのインジェストと回答）を実演するための**全自動デモ実行スクリプト**および**詳細なデモガイド**を用意しています。
 
-詳細は [FASTAPI_DEMO_GUIDE.md](file:///Users/apple/develop/ai-agent-rag/FASTAPI_DEMO_GUIDE.md) を参照してください。
+詳細は [FASTAPI_DEMO_GUIDE.md](./FASTAPI_DEMO_GUIDE.md) を参照してください。
 
 ```bash
 # FastAPIサーバーを起動した状態で、別ターミナルで実行するだけでデモが全自動で流れます
@@ -574,7 +574,7 @@ uv run python -m tools.sync_prompts_from_hub --dry-run --fail-on-diff
 
 ## 評価・ダッシュボード
 
-本プロジェクトでは、検索精度と制御品質の劣化を防かを防ぐため、詳細な評価パイプラインとレポート生成機能を備えています。
+本プロジェクトでは、検索精度と制御品質の劣化を防ぐため、詳細な評価パイプラインとレポート生成機能を備えています。
 
 ### 評価の実行
 データセット（`evaluation/dataset.json`）に基づき、システム全体の評価を実行します。
