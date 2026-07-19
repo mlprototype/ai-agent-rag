@@ -51,6 +51,7 @@ class AgentState(TypedDict, total=False):
     retrieval_degraded: bool
     confidence_cap: float | None
     structured_query_source_name: str
+    observed_tool_calls: list[dict[str, Any]]
 
     # 予算・タイムアウト・フォールバック管理
     budget_started_at: float
@@ -81,7 +82,7 @@ class AgentState(TypedDict, total=False):
     fallback_level: Literal["full_path", "optimization_skip", "critic_skip", "single_retrieval_fallback", "minimal_answer"]
     skipped_stages: list[str]
     budget_pressure_reasons: list[str]
-    remaining_budget_ms_at_generate: int
+    remaining_budget_ms_at_generate: int | None
     partial_retrieval_used: bool
     retrieval_timeout_count: int
     retrieval_success_count: int

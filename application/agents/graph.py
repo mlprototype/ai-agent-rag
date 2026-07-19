@@ -269,6 +269,19 @@ def _append_stage(items: list[str] | None, stage: str) -> list[str]:
     return existing
 
 
+def _source_id(doc_id: Any, chunk_id: Any = None) -> str:
+    """評価Traceで安定して参照できる source_id を生成する。"""
+    normalized_doc_id = str(doc_id or "unknown-source")
+    normalized_chunk_id = str(chunk_id or "").strip()
+    if normalized_chunk_id:
+        if normalized_chunk_id == normalized_doc_id or normalized_chunk_id.startswith(
+            f"{normalized_doc_id}#"
+        ):
+            return normalized_chunk_id
+        return f"{normalized_doc_id}#{normalized_chunk_id}"
+    return normalized_doc_id
+
+
 # 関数の役割: 現在のステージで利用可能なタイムアウト秒数の算出
 # 入出力: AgentState等を受け取り、タイムアウト秒を返す
 # state更新: 更新なし
@@ -520,6 +533,8 @@ async def initialize_node(state: AgentState) -> dict[str, Any]:
         "must_generate": False,
         "retrieval_degraded": False,
         "confidence_cap": None,
+        "structured_query_source_name": "",
+        "observed_tool_calls": [],
         "budget_started_at": time.monotonic(),
         "initial_budget_ms": initial_budget_ms,
         "remaining_budget_ms": initial_budget_ms,
@@ -542,7 +557,7 @@ async def initialize_node(state: AgentState) -> dict[str, Any]:
         "fallback_level": "full_path",
         "skipped_stages": [],
         "budget_pressure_reasons": [],
-        "remaining_budget_ms_at_generate": 0,
+        "remaining_budget_ms_at_generate": None,
         "partial_retrieval_used": False,
         "retrieval_timeout_count": 0,
         "retrieval_success_count": 0,
@@ -602,7 +617,26 @@ async def router_node(state: AgentState) -> dict[str, Any]:
 # state更新: working_chunks, retrieval_context などを更新
 # フォールバック: 特になし
 async def retrieve_node(state: AgentState) -> dict[str, Any]:
+    started_at = time.monotonic()
     result = await RetrievalService.run(state["original_query"])
+    duration_ms = int((time.monotonic() - started_at) * 1000)
+    source_ids = [
+        _source_id(source.get("doc_id"), source.get("chunk_id"))
+        for source in result["sources"]
+        if isinstance(source, dict)
+    ]
+    observed_tool_calls = [
+        *state.get("observed_tool_calls", []),
+        {
+            "name": "hybrid_search",
+            "arguments": {"query": state["original_query"]},
+            "result": {
+                "source_ids": source_ids,
+                "source_count": len(source_ids),
+            },
+            "duration_ms": duration_ms,
+        },
+    ]
     return {
         "working_chunks": _chunk_models_to_dicts(result["chunks"]),
         "retrieval_context": result["context"],
@@ -612,6 +646,7 @@ async def retrieve_node(state: AgentState) -> dict[str, Any]:
         "retrieval_critic_skipped_reason": None,
         "answer_critic_skipped_reason": None,
         "retrieval_success_count": state.get("retrieval_success_count", 0) + 1,
+        "observed_tool_calls": observed_tool_calls,
         **_budget_runtime_updates(state, route="agentic_retrieval"),
     }
 
@@ -800,20 +835,52 @@ async def parallel_retrieve_node(state: AgentState) -> dict[str, Any]:
     if not sub_queries:
         sub_queries = [state["original_query"]]
 
-    tasks = [RetrievalService.search(query) for query in sub_queries]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    async def timed_search(query: str):
+        started_at = time.monotonic()
+        try:
+            result = await RetrievalService.search(query)
+            return query, result, int((time.monotonic() - started_at) * 1000), None
+        except Exception as exc:
+            return query, None, int((time.monotonic() - started_at) * 1000), type(exc).__name__
+
+    results = await asyncio.gather(*(timed_search(query) for query in sub_queries))
 
     parallel_results: list[list[dict[str, Any]]] = []
     timeout_count = 0
     success_count = 0
+    observed_tool_calls = list(state.get("observed_tool_calls", []))
     
-    for result in results:
-        if isinstance(result, Exception):
+    for query, result, duration_ms, error_name in results:
+        if error_name is not None:
             timeout_count += 1
+            observed_tool_calls.append(
+                {
+                    "name": "hybrid_search",
+                    "arguments": {"query": query},
+                    "error": error_name,
+                    "duration_ms": duration_ms,
+                }
+            )
             continue
         success_count += 1
-        if result.selected_chunks:
-            parallel_results.append(_chunk_models_to_dicts(result.selected_chunks))
+        selected_chunks = result.selected_chunks
+        source_ids = [
+            _source_id(chunk.doc_id, chunk.chunk_id)
+            for chunk in selected_chunks
+        ]
+        observed_tool_calls.append(
+            {
+                "name": "hybrid_search",
+                "arguments": {"query": query},
+                "result": {
+                    "source_ids": source_ids,
+                    "source_count": len(source_ids),
+                },
+                "duration_ms": duration_ms,
+            }
+        )
+        if selected_chunks:
+            parallel_results.append(_chunk_models_to_dicts(selected_chunks))
 
     partial_used = timeout_count > 0 and success_count > 0
 
@@ -824,6 +891,7 @@ async def parallel_retrieve_node(state: AgentState) -> dict[str, Any]:
         "fallback_level": fallback_level,
         "warning_codes": warning_codes,
         "budget_pressure_reasons": budget_pressure_reasons,
+        "observed_tool_calls": observed_tool_calls,
     }
 
     if partial_used:
@@ -1042,6 +1110,7 @@ async def generate_node(state: AgentState) -> dict[str, Any]:
 # フォールバック: 特になし
 async def direct_generate_node(state: AgentState) -> dict[str, Any]:
     runtime_updates = _budget_runtime_updates(state, checkpoint="before_generate")
+    remaining_at_start = compute_remaining_budget_ms(state)
 
     chain = _get_direct_chain()
     logger.info(f"Generating direct answer: route={state['route']}")
@@ -1056,6 +1125,7 @@ async def direct_generate_node(state: AgentState) -> dict[str, Any]:
         "warning": None,
         "missing_aspects": [],
         "answer_critic_skipped_reason": None,
+        "remaining_budget_ms_at_generate": remaining_at_start,
         **runtime_updates,
     }
 
@@ -1066,9 +1136,27 @@ async def direct_generate_node(state: AgentState) -> dict[str, Any]:
 # フェールセーフ: 抽出失敗時なども安全に代替テキストが answer に入る設計
 async def structured_query_node(state: AgentState) -> dict[str, Any]:
     runtime_updates = _budget_runtime_updates(state, checkpoint="before_generate")
+    remaining_at_start = compute_remaining_budget_ms(state)
     
     query = state.get("original_query", "")
+    started_at = time.monotonic()
     result = StructuredQueryTool.run(query)
+    duration_ms = int((time.monotonic() - started_at) * 1000)
+    observed_tool_calls = [
+        *state.get("observed_tool_calls", []),
+        {
+            "name": "structured_query_tool",
+            "arguments": {"query": query},
+            "result": {
+                "success": result.success,
+                "operation": result.operation,
+                "source_name": result.source_name,
+                "row_count": len(result.rows),
+            },
+            "error": result.error_message,
+            "duration_ms": duration_ms,
+        },
+    ]
     
     updates = {
         "answer": result.summary,
@@ -1079,6 +1167,8 @@ async def structured_query_node(state: AgentState) -> dict[str, Any]:
         "answer_critic_skipped_reason": None,
         "sources": [{"source_name": result.source_name, "type": "structured_data"}] if result.success else [],
         "structured_query_source_name": result.source_name if result.success else "Unknown",
+        "observed_tool_calls": observed_tool_calls,
+        "remaining_budget_ms_at_generate": remaining_at_start,
         **runtime_updates,
     }
     return updates
@@ -1216,6 +1306,17 @@ async def compare_retrieve_node(state: AgentState) -> dict[str, Any]:
     start_t = time.monotonic()
     results = await run_compare_retrieval([t_a, t_b], aspect)
     latency_ms = int((time.monotonic() - start_t) * 1000)
+    result_summary = {}
+    for target, result in results.items():
+        source_ids = [
+            _source_id(source.get("doc_id"), source.get("chunk_id"))
+            for source in result.get("sources", [])
+            if isinstance(source, dict)
+        ]
+        result_summary[str(target)] = {
+            "source_ids": source_ids,
+            "source_count": len(source_ids),
+        }
     
     logger.info({
         "event": "compare_retrieval_summary",
@@ -1226,7 +1327,19 @@ async def compare_retrieve_node(state: AgentState) -> dict[str, Any]:
     
     return {
         "parallel_results": [results], # just store raw dict inside list to trick state checks if ever needed
-        "compare_path_used": True
+        "compare_path_used": True,
+        "observed_tool_calls": [
+            *state.get("observed_tool_calls", []),
+            {
+                "name": "compare_retrieval",
+                "arguments": {
+                    "targets": [t_a, t_b],
+                    "aspect": aspect,
+                },
+                "result": result_summary,
+                "duration_ms": latency_ms,
+            },
+        ],
     }
 
 
@@ -1286,6 +1399,7 @@ def route_after_compare_merge(state: AgentState) -> str:
 # state更新: answer, answer_ok などを更新
 # フォールバック: 特になし
 async def compare_generate_node(state: AgentState) -> dict[str, Any]:
+    remaining_at_start = compute_remaining_budget_ms(state)
     _compare_fallback_prompt = ChatPromptTemplate.from_messages([
         (
             "system",
@@ -1333,6 +1447,7 @@ async def compare_generate_node(state: AgentState) -> dict[str, Any]:
         "quality_gate_status": "pass",
         "quality_gate_reasons": [],
         "quality_gate_confidence": 0.8,
+        "remaining_budget_ms_at_generate": remaining_at_start,
         **_budget_runtime_updates(state)
     }
 

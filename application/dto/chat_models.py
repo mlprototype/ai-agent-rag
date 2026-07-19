@@ -5,6 +5,7 @@ class Source(BaseModel):
     """
     ナレッジベースから取得されたソースドキュメントを表します。
     """
+    citation_id: int = Field(description="回答中の引用番号（[1] など）と対応するID。")
     doc_id: str = Field(description="ソースドキュメントの識別子（ファイル名等）。")
     chunk_id: str = Field(default="", description="チャンクの識別子。")
     snippet: str = Field(default="", description="取得されたテキストの抜粋。")
