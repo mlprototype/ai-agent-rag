@@ -39,6 +39,13 @@ logger.setLevel(logging.INFO)
 
 _TRACE_SCHEMA_VERSION = "1.0"
 _TRACE_TARGET = "ai-agent-rag"
+_EVALUATION_ROUTE_BY_INTERNAL_ROUTE = {
+    "direct_answer": "direct",
+    "structured_query_tool": "structured_query",
+    "agentic_retrieval": "retrieval",
+    "fallback_retrieval": "retrieval",
+    "compare_fast_path": "compare",
+}
 
 
 def _json_safe(value: Any) -> Any:
@@ -398,7 +405,13 @@ class ChatService:
         state = run.final_state
         answer = str(state.get("answer", ""))
         query_type = str(state.get("query_type") or "unknown")
-        route = str(state.get("route") or "unknown")
+        internal_route = str(state.get("route") or "unknown")
+        route = _EVALUATION_ROUTE_BY_INTERNAL_ROUTE.get(
+            internal_route, internal_route
+        )
+        output_metadata: dict[str, Any] = {"internal_route": internal_route}
+        if internal_route == "fallback_retrieval":
+            output_metadata["degraded"] = True
         confidence_value = state.get("confidence", 0.0)
         try:
             confidence = max(0.0, min(1.0, float(confidence_value)))
@@ -468,6 +481,7 @@ class ChatService:
             target=target,
             input=AgentRunInput(question=request.question),
             output=AgentRunOutput(
+                metadata=output_metadata,
                 answer=answer,
                 query_type=query_type,
                 route=route,
@@ -582,20 +596,37 @@ class ChatService:
         run: _GraphRunResult,
         sources: list[SourceTrace],
     ) -> list[ToolCallTrace]:
-        if run.tool_events:
-            return [
-                cls._tool_call_from_record(record, origin="tool_event")
-                for record in run.tool_events
-            ]
-
+        event_calls = [
+            cls._tool_call_from_record(record, origin="tool_event")
+            for record in run.tool_events
+            if isinstance(record, Mapping)
+        ]
         normalized_records = run.final_state.get("observed_tool_calls", [])
         if not normalized_records:
             normalized_records = cls._infer_tool_calls(request, run.final_state, sources)
-        return [
+        normalized_calls = [
             cls._tool_call_from_record(record, origin="normalized_from_state")
             for record in normalized_records
             if isinstance(record, Mapping)
         ]
+
+        tool_calls: list[ToolCallTrace] = []
+        seen: set[str] = set()
+        for tool_call in [*event_calls, *normalized_calls]:
+            signature = json.dumps(
+                {
+                    "name": tool_call.name,
+                    "arguments": tool_call.arguments,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if signature in seen:
+                continue
+            seen.add(signature)
+            tool_calls.append(tool_call)
+        return tool_calls
 
     @staticmethod
     def _tool_call_from_record(
@@ -606,13 +637,46 @@ class ChatService:
         arguments = record.get("arguments", {})
         if not isinstance(arguments, Mapping):
             arguments = {"input": arguments}
+        normalized_arguments = _json_safe(arguments)
+        name = str(record.get("name") or "unknown_tool")
+
+        raw_metadata = record.get("metadata")
+        metadata = (
+            dict(_json_safe(raw_metadata))
+            if isinstance(raw_metadata, Mapping)
+            else {}
+        )
+        if name == "compare_retrieval":
+            targets = normalized_arguments.get("targets", [])
+            if isinstance(targets, Mapping):
+                left = targets.get("target_a") or targets.get("left")
+                right = targets.get("target_b") or targets.get("right")
+            elif isinstance(targets, list):
+                left = targets[0] if len(targets) > 0 else None
+                right = targets[1] if len(targets) > 1 else None
+            else:
+                left = None
+                right = None
+            aspect = normalized_arguments.get("aspect")
+            aspects = normalized_arguments.get("aspects")
+            if not isinstance(aspects, list):
+                aspects = [aspect] if aspect else []
+            normalized_arguments = {
+                "left": left,
+                "right": right,
+                "aspects": aspects,
+            }
+            metadata.setdefault("internal_tool_name", name)
+            name = "compare_documents"
+
+        metadata["origin"] = origin
         error_value = record.get("error")
         error = str(error_value).strip() if error_value else None
         duration_ms = _optional_nonnegative_float(record.get("duration_ms"))
         return ToolCallTrace(
-            metadata={"origin": origin},
-            name=str(record.get("name") or "unknown_tool"),
-            arguments=_json_safe(arguments),
+            metadata=metadata,
+            name=name,
+            arguments=normalized_arguments,
             result=_json_safe(record.get("result")),
             error=error,
             duration_ms=duration_ms,
@@ -627,10 +691,22 @@ class ChatService:
         route = state.get("route")
         source_ids = [source.source_id for source in sources]
         if route == "structured_query_tool":
+            filters = state.get("structured_query_filters")
             return [
                 {
                     "name": "structured_query_tool",
-                    "arguments": {"query": request.question},
+                    "arguments": {
+                        "operation": state.get("structured_query_operation"),
+                        "target_metric": state.get(
+                            "structured_query_target_metric"
+                        ),
+                        "filters": dict(filters)
+                        if isinstance(filters, Mapping)
+                        else {},
+                        "target_dataset": state.get(
+                            "structured_query_target_dataset"
+                        ),
+                    },
                     "result": {
                         "source_name": state.get("structured_query_source_name")
                     },
@@ -648,10 +724,14 @@ class ChatService:
                 }
             ]
         if route in {"agentic_retrieval", "fallback_retrieval"}:
+            arguments: dict[str, Any] = {"query": request.question}
+            top_k = _optional_nonnegative_int(state.get("retrieval_top_k"))
+            if top_k is not None:
+                arguments["top_k"] = top_k
             return [
                 {
                     "name": "hybrid_search",
-                    "arguments": {"query": request.question},
+                    "arguments": arguments,
                     "result": {"source_ids": source_ids},
                 }
             ]
@@ -659,20 +739,26 @@ class ChatService:
 
     @staticmethod
     def _build_usage(run: _GraphRunResult) -> UsageTrace:
-        usage_values = dict(run.usage)
-        if not any(value is not None for value in usage_values.values()):
+        usage_values = _normalize_usage(run.usage)
+        origin = (
+            "langchain_callbacks"
+            if any(value is not None for value in usage_values.values())
+            else None
+        )
+        if origin is None:
             state_usage = run.final_state.get("usage")
             if isinstance(state_usage, Mapping):
                 usage_values = _normalize_usage(state_usage)
-        observed = any(value is not None for value in usage_values.values())
+                if any(value is not None for value in usage_values.values()):
+                    origin = "agent_state"
         values: dict[str, Any] = {
             "input_tokens": _optional_nonnegative_int(usage_values.get("input_tokens")),
             "output_tokens": _optional_nonnegative_int(usage_values.get("output_tokens")),
             "total_tokens": _optional_nonnegative_int(usage_values.get("total_tokens")),
             "cost_usd": _optional_nonnegative_float(usage_values.get("cost_usd")),
         }
-        if observed:
-            values["metadata"] = {"origin": "langchain_callbacks"}
+        if origin is not None:
+            values["metadata"] = {"origin": origin}
         return UsageTrace(**values)
 
     @staticmethod

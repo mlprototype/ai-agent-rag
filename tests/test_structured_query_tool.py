@@ -19,6 +19,7 @@ def test_execute_structured_query_success():
     result = StructuredQueryTool.run("売上の合計は？")
     assert result.success is True
     assert result.operation == "sum"
+    assert result.target_dataset == "sales"
     assert "合計は" in result.summary
 
     result2 = StructuredQueryTool.run("q1の注文件数は？")
@@ -29,6 +30,7 @@ def test_execute_structured_query_success():
 def test_execute_structured_query_fail_safe():
     result = StructuredQueryTool.run("存在しないデータの平均")
     assert result.success is False
+    assert result.target_dataset == "unknown"
     assert result.error_message == "unknown_dataset"
     assert "対象の指標または条件が特定できませんでした" in result.summary
 

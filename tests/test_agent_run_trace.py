@@ -83,7 +83,9 @@ async def test_direct_trace_and_chat_response_share_one_graph_execution():
 
     assert fake_graph.calls == 1
     assert response.answer == trace.output.answer == "こんにちは！"
-    assert response.route == trace.output.route == "direct_answer"
+    assert response.route == "direct_answer"
+    assert trace.output.route == "direct"
+    assert trace.output.metadata["internal_route"] == "direct_answer"
     assert response.confidence is None
     assert trace.output.confidence == 0.8
     assert trace.tool_calls == []
@@ -108,10 +110,19 @@ async def test_structured_query_trace_uses_normalized_tool_fact():
                 {"source_name": "SQLite (sales)", "type": "structured_data"}
             ],
             structured_query_source_name="SQLite (sales)",
+            structured_query_operation="sum",
+            structured_query_target_metric="sales",
+            structured_query_filters={},
+            structured_query_target_dataset="sales",
             observed_tool_calls=[
                 {
                     "name": "structured_query_tool",
-                    "arguments": {"query": "売上の合計は？"},
+                    "arguments": {
+                        "operation": "sum",
+                        "target_metric": "sales",
+                        "filters": {},
+                        "target_dataset": "sales",
+                    },
                     "result": {
                         "success": True,
                         "operation": "sum",
@@ -133,10 +144,16 @@ async def test_structured_query_trace_uses_normalized_tool_fact():
 
     mocked.assert_awaited_once_with(request)
     assert trace.output.query_type == "structured_query"
-    assert trace.output.route == "structured_query_tool"
+    assert trace.output.route == "structured_query"
+    assert trace.output.metadata["internal_route"] == "structured_query_tool"
     assert trace.tool_calls[0].name == "structured_query_tool"
     assert trace.tool_calls[0].metadata["origin"] == "normalized_from_state"
-    assert trace.tool_calls[0].arguments == {"query": "売上の合計は？"}
+    assert trace.tool_calls[0].arguments == {
+        "operation": "sum",
+        "target_metric": "sales",
+        "filters": {},
+        "target_dataset": "sales",
+    }
     assert trace.sources[0].source_id == "SQLite (sales)"
 
 
@@ -177,7 +194,7 @@ async def test_agentic_retrieval_trace_maps_citations_and_control():
             observed_tool_calls=[
                 {
                     "name": "hybrid_search",
-                    "arguments": {"query": "RAGとは？"},
+                    "arguments": {"query": "RAGとは？", "top_k": 5},
                     "result": {"source_ids": ["rag.md#overview", "rag.md#details"]},
                     "duration_ms": 11,
                 }
@@ -199,6 +216,10 @@ async def test_agentic_retrieval_trace_maps_citations_and_control():
         )
 
     assert response.sources is not None
+    assert response.route == "agentic_retrieval"
+    assert trace.output.route == "retrieval"
+    assert trace.output.metadata["internal_route"] == "agentic_retrieval"
+    assert trace.tool_calls[0].arguments == {"query": "RAGとは？", "top_k": 5}
     assert [source.citation_id for source in response.sources] == [1]
     assert [source.source_id for source in trace.sources] == [
         "rag.md#overview",
@@ -217,6 +238,7 @@ async def test_agentic_retrieval_trace_maps_citations_and_control():
     assert trace.control.remaining_budget_ms_at_generate == 1240
     assert trace.usage.total_tokens == 28
     assert trace.usage.cost_usd is None
+    assert trace.usage.metadata["origin"] == "langchain_callbacks"
     assert trace.timing.tool_latency_ms == 11
 
 
@@ -276,13 +298,20 @@ async def test_compare_trace_preserves_compare_route_and_tool_fact():
         )
 
     assert trace.output.query_type == "compare"
-    assert trace.output.route == "compare_fast_path"
-    assert trace.tool_calls[0].name == "compare_retrieval"
+    assert trace.output.route == "compare"
+    assert trace.output.metadata["internal_route"] == "compare_fast_path"
+    assert trace.tool_calls[0].name == "compare_documents"
     assert trace.tool_calls[0].metadata["origin"] == "normalized_from_state"
+    assert trace.tool_calls[0].metadata["internal_tool_name"] == "compare_retrieval"
+    assert trace.tool_calls[0].arguments == {
+        "left": "RAG",
+        "right": "Fine-tuning",
+        "aspects": ["違い"],
+    }
     assert {citation.citation_id for citation in trace.citations} == {"1", "2"}
 
 
-def test_real_tool_events_take_precedence_over_normalized_state():
+def test_real_and_normalized_tool_events_are_merged():
     request = ChatRequest(session_id="event-session", question="実Toolを使う")
     run = make_run(
         base_state(
@@ -307,8 +336,87 @@ def test_real_tool_events_take_precedence_over_normalized_state():
         run_id="event-run",
     )
 
-    assert [tool.name for tool in trace.tool_calls] == ["real_tool"]
+    assert [tool.name for tool in trace.tool_calls] == [
+        "real_tool",
+        "normalized_tool",
+    ]
     assert trace.tool_calls[0].metadata["origin"] == "tool_event"
+    assert trace.tool_calls[1].metadata["origin"] == "normalized_from_state"
+
+
+def test_duplicate_real_and_normalized_tool_events_prefer_real_event():
+    request = ChatRequest(session_id="event-session", question="検索する")
+    duplicate = {
+        "name": "hybrid_search",
+        "arguments": {"query": "検索する", "top_k": 5},
+    }
+    run = make_run(
+        base_state(
+            route="agentic_retrieval",
+            observed_tool_calls=[duplicate],
+        ),
+        tool_events=[duplicate],
+    )
+
+    trace = ChatService._build_agent_run_trace(
+        request,
+        run,
+        case_id="dedupe-case",
+        run_id="dedupe-run",
+    )
+
+    assert len(trace.tool_calls) == 1
+    assert trace.tool_calls[0].metadata["origin"] == "tool_event"
+
+
+def test_usage_from_agent_state_reports_accurate_origin():
+    request = ChatRequest(session_id="usage-session", question="usage")
+    run = make_run(
+        base_state(
+            usage={
+                "prompt_tokens": 4,
+                "completion_tokens": 2,
+                "total_tokens": 6,
+            }
+        )
+    )
+
+    trace = ChatService._build_agent_run_trace(
+        request,
+        run,
+        case_id="usage-case",
+        run_id="usage-run",
+    )
+
+    assert trace.usage.input_tokens == 4
+    assert trace.usage.output_tokens == 2
+    assert trace.usage.total_tokens == 6
+    assert trace.usage.metadata["origin"] == "agent_state"
+
+
+def test_fallback_retrieval_route_is_common_and_marked_degraded():
+    request = ChatRequest(session_id="fallback-session", question="検索する")
+    run = make_run(
+        base_state(
+            route="fallback_retrieval",
+            query_type="definition",
+            retrieval_top_k=3,
+        )
+    )
+
+    trace = ChatService._build_agent_run_trace(
+        request,
+        run,
+        case_id="fallback-case",
+        run_id="fallback-run",
+    )
+
+    assert trace.output.route == "retrieval"
+    assert trace.output.metadata == {
+        "internal_route": "fallback_retrieval",
+        "degraded": True,
+    }
+    assert trace.tool_calls[0].arguments == {"query": "検索する", "top_k": 3}
 
 
 def test_graph_observer_collects_tool_events_and_available_usage():

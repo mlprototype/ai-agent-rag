@@ -11,7 +11,13 @@ class AgentState(TypedDict, total=False):
     messages: Annotated[list[BaseMessage], operator.add]
     session_id: str
     original_query: str
-    route: Literal["direct_answer", "structured_query_tool", "agentic_retrieval", "fallback_retrieval"]
+    route: Literal[
+        "direct_answer",
+        "structured_query_tool",
+        "agentic_retrieval",
+        "fallback_retrieval",
+        "compare_fast_path",
+    ]
     router_reason: str
     router_uncertain: bool
 
@@ -51,7 +57,13 @@ class AgentState(TypedDict, total=False):
     retrieval_degraded: bool
     confidence_cap: float | None
     structured_query_source_name: str
+    structured_query_operation: str
+    structured_query_target_metric: str | None
+    structured_query_filters: dict[str, Any]
+    structured_query_target_dataset: str | None
+    retrieval_top_k: int | None
     observed_tool_calls: list[dict[str, Any]]
+    usage: dict[str, Any]
 
     # 予算・タイムアウト・フォールバック管理
     budget_started_at: float

@@ -534,6 +534,11 @@ async def initialize_node(state: AgentState) -> dict[str, Any]:
         "retrieval_degraded": False,
         "confidence_cap": None,
         "structured_query_source_name": "",
+        "structured_query_operation": "",
+        "structured_query_target_metric": None,
+        "structured_query_filters": {},
+        "structured_query_target_dataset": None,
+        "retrieval_top_k": None,
         "observed_tool_calls": [],
         "budget_started_at": time.monotonic(),
         "initial_budget_ms": initial_budget_ms,
@@ -629,7 +634,10 @@ async def retrieve_node(state: AgentState) -> dict[str, Any]:
         *state.get("observed_tool_calls", []),
         {
             "name": "hybrid_search",
-            "arguments": {"query": state["original_query"]},
+            "arguments": {
+                "query": state["original_query"],
+                "top_k": result["top_k"],
+            },
             "result": {
                 "source_ids": source_ids,
                 "source_count": len(source_ids),
@@ -642,6 +650,7 @@ async def retrieve_node(state: AgentState) -> dict[str, Any]:
         "retrieval_context": result["context"],
         "sources": result["sources"],
         "confidence": result["confidence"],
+        "retrieval_top_k": result["top_k"],
         "force_generate": not bool(result["chunks"]),
         "retrieval_critic_skipped_reason": None,
         "answer_critic_skipped_reason": None,
@@ -871,7 +880,10 @@ async def parallel_retrieve_node(state: AgentState) -> dict[str, Any]:
         observed_tool_calls.append(
             {
                 "name": "hybrid_search",
-                "arguments": {"query": query},
+                "arguments": {
+                    "query": query,
+                    "top_k": result.top_k,
+                },
                 "result": {
                     "source_ids": source_ids,
                     "source_count": len(source_ids),
@@ -1146,7 +1158,12 @@ async def structured_query_node(state: AgentState) -> dict[str, Any]:
         *state.get("observed_tool_calls", []),
         {
             "name": "structured_query_tool",
-            "arguments": {"query": query},
+            "arguments": {
+                "operation": result.operation,
+                "target_metric": result.target_metric,
+                "filters": result.filters,
+                "target_dataset": result.target_dataset,
+            },
             "result": {
                 "success": result.success,
                 "operation": result.operation,
@@ -1167,6 +1184,10 @@ async def structured_query_node(state: AgentState) -> dict[str, Any]:
         "answer_critic_skipped_reason": None,
         "sources": [{"source_name": result.source_name, "type": "structured_data"}] if result.success else [],
         "structured_query_source_name": result.source_name if result.success else "Unknown",
+        "structured_query_operation": result.operation,
+        "structured_query_target_metric": result.target_metric,
+        "structured_query_filters": result.filters,
+        "structured_query_target_dataset": result.target_dataset,
         "observed_tool_calls": observed_tool_calls,
         "remaining_budget_ms_at_generate": remaining_at_start,
         **runtime_updates,
