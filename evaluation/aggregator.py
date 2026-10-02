@@ -4,6 +4,7 @@
 カテゴリ別の指標を計算して、最終的なレポート（EvalReport）を生成します。
 """
 
+import math
 import statistics
 from typing import List, Dict, Any
 from datetime import datetime
@@ -34,9 +35,8 @@ def calculate_summary(records: List[EvalRecord]) -> EvalSummary:
     latencies = sorted([r.latency_ms for r in records])
     p50 = statistics.median(latencies)
     
-    # 95パーセンタイルの計算 (nearest rank method)
-    # 1件のみの場合はその値、それ以外はインデックスを計算
-    idx95 = max(0, int(len(latencies) * 0.95) - 1)
+    # Nearest-rank: 昇順の ceil(0.95 * n) 番目（0-based index は -1）。
+    idx95 = math.ceil(count * 0.95) - 1
     p95 = latencies[idx95]
 
     return EvalSummary(

@@ -45,20 +45,38 @@ class TestEvaluation(unittest.TestCase):
         ]
 
     def test_p50_p95_calculation(self):
-        """p50/p95の計算ロジックが正しいかテストします。"""
-        # latencies: [1000, 1500, 2000, 3000, 4000]
-        # count: 5
-        # median (p50): 2000
-        # p95 index: max(0, int(5 * 0.95) - 1) = max(0, 4 - 1) = 3 -> 3000 (nearest rank)
-        # ※ 実装により 0.95 * 5 = 4.75 -> index 4 (4000) になる場合もあるが、実装に合わせる
-        
+        """p50 は中央値、p95 は nearest-rank（ceil(0.95 * n) 番目）。"""
         summary = calculate_summary(self.records)
         self.assertEqual(summary.latency_p50_ms, 2000)
-        
-        # 実装を確認: idx95 = max(0, int(len(latencies) * 0.95) - 1)
-        # int(5 * 0.95) - 1 = int(4.75) - 1 = 4 - 1 = 3
-        # latencies[3] = 3000
-        self.assertEqual(summary.latency_p95_ms, 3000)
+        self.assertEqual(summary.latency_p95_ms, 4000)
+
+    def test_percentiles_for_empty_single_even_and_odd_samples(self):
+        cases = (
+            ([], 0, 0),
+            ([123], 123, 123),
+            ([2000, 1000], 1500, 2000),
+            ([3000, 1000, 2000], 2000, 3000),
+            ([4000, 1000, 3000, 2000], 2500, 4000),
+            ([4000, 1000, 3000, 2000, 1500], 2000, 4000),
+            (list(range(20, 0, -1)), 10.5, 19),
+            (list(range(21, 0, -1)), 11, 20),
+        )
+        for latencies, expected_p50, expected_p95 in cases:
+            with self.subTest(count=len(latencies)):
+                records = [
+                    self.records[0].model_copy(update={"latency_ms": latency})
+                    for latency in latencies
+                ]
+                summary = calculate_summary(records)
+                self.assertEqual(summary.latency_p50_ms, expected_p50)
+                self.assertEqual(summary.latency_p95_ms, expected_p95)
+                self.assertGreaterEqual(summary.latency_p95_ms, summary.latency_p50_ms)
+
+    def test_nearest_rank_is_used_for_route_and_query_type_groups(self):
+        report = aggregate_results(self.records[:2], execution_time_ms=3000)
+        for summary in (report.summary, report.by_query_type["typeA"], report.by_route["route1"]):
+            self.assertEqual(summary.latency_p50_ms, 1500)
+            self.assertEqual(summary.latency_p95_ms, 2000)
 
     def test_rates_calculation(self):
         """各種率の計算が正しいかテストします。"""

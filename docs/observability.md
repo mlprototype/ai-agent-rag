@@ -32,7 +32,8 @@
 | `compare_doc_count_a` / `_b` | A/B それぞれの検索ヒット件数 |
 | `compare_context_coverage_ok` | merge 後の coverage 判定結果 |
 | `compare_route_fallback_used` | agentic_retrieval へのフォールバック有無 |
-| `quality_gate_status` | compare fast-path 成功時に現在は `pass` を記録 |
+| `quality_gate_status` | Compare 生成後の軽量ルール判定結果（`pass` / `warning` / `fail`）。未実行時は `None` |
+| `quality_gate_confidence` | Gate のルールによる内部指標。正答確率ではない |
 
 ### Prompt / Runtime
 

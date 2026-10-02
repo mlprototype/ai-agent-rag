@@ -15,7 +15,7 @@
 ```bash
 python3 evaluation/evaluate.py
 ```
-実行完了後、`evaluation/eval_results_YYYYMMDD_HHMMSS.json` が生成されます。
+実行完了後、`evaluation/results/eval_results_YYYYMMDD_HHMMSS.json` が生成されます。
 
 ### Step 2: レポート生成と比較
 最新の結果を、基準となる結果（Baseline）と比較します。
@@ -37,10 +37,12 @@ uv run python -m evaluation.reporter --current evaluation/eval_results_latest.js
 
 各指標やコードの意味は以下の通りです。
 
+Latency の p50 は中央値、p95 は nearest-rank（昇順の `ceil(0.95 * n)` 番目）で計算します。1件の場合は両方ともその値を返し、空集合は0として扱います。
+
 | 指標 / 項目 | 意味 |
 | :--- | :--- |
 | **response_generated_rate** | システムが最終的に何らかの回答テキストを生成できた割合。 |
-| **answer_ok_rate** | 回答が品質基準（Critic等）をパスし、品質が担保されている割合。 |
+| **answer_ok_rate** | 内部品質判定（Critic / Gate等）を pass した割合。 |
 | **fallback_level** | 縮退動作の度合い。`LEVEL_0`（正常）から、予算不足等によるスキップが増えるほど数値が上がります。 |
 | **warning_codes** | `TIMEOUT_ROUTER`（ルーター遅延）や `LOW_CONFIDENCE`（低信頼度）など、内部的な注意状態を示す詳細コード。 |
 | **reason_code** | 実行結果のステータス。`SUCCESS` 以外に `unsupported_query`（未対応）や `validation_failed`（検証失敗）などがあります。 |

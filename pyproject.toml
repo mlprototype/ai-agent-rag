@@ -25,6 +25,11 @@ dependencies = [
     "uvicorn>=0.41.0",
 ]
 
+[project.optional-dependencies]
+rerank = [
+    "cohere>=7.2.0,<8",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",

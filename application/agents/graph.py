@@ -1398,7 +1398,8 @@ def compare_merge_node(state: AgentState) -> dict[str, Any]:
         "compare_route_fallback_used": not coverage_ok,
         "working_chunks": _chunk_models_to_dicts(all_chunks),
         "sources": unique_sources,
-        "coverage_score": 0.8 if coverage_ok else 0.0,
+        # Compare coverage は両対象の取得有無を示す二値指標。意味的品質ではない。
+        "coverage_score": float(coverage_ok),
     }
 
 
@@ -1449,25 +1450,39 @@ async def compare_generate_node(state: AgentState) -> dict[str, Any]:
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
     response = await llm.ainvoke(formatted)
     latency_ms = int((time.monotonic() - start_t) * 1000)
+    answer = response.content.strip()
+    targets = state.get("compare_targets") or {}
+    verdict, confidence, warning, missing_aspects = CompareQualityGate.evaluate(
+        answer=answer,
+        target_a=targets.get("target_a", ""),
+        target_b=targets.get("target_b", ""),
+        doc_count_a=state.get("compare_doc_count_a", 0),
+        doc_count_b=state.get("compare_doc_count_b", 0),
+        coverage_ok=state.get("compare_context_coverage_ok", False),
+        sources_count=len(state.get("sources", [])),
+        extract_success=state.get("compare_extract_success", False),
+    )
     
     logger.info({
         "event": "compare_generation_result",
         "latency_ms": latency_ms,
         "route": "compare_fast_path",
+        "quality_gate_status": verdict,
+        "quality_gate_confidence": confidence,
     })
     
-    # We set route to compare_fast_path to bypass normal answer_critic checks or influence them
+    # Compare 専用の軽量ルール判定。一般の Answer Critic は通さない。
     return {
-        "answer": response.content.strip(),
+        "answer": answer,
         "route": "compare_fast_path",
-        "confidence": 0.8,
-        "answer_ok": True,
-        "warning": None,
-        "missing_aspects": [],
+        "confidence": confidence,
+        "answer_ok": verdict == "pass",
+        "warning": warning,
+        "missing_aspects": missing_aspects,
         "answer_critic_skipped_reason": None,
-        "quality_gate_status": "pass",
-        "quality_gate_reasons": [],
-        "quality_gate_confidence": 0.8,
+        "quality_gate_status": verdict,
+        "quality_gate_reasons": missing_aspects + ([warning] if warning else []),
+        "quality_gate_confidence": confidence,
         "remaining_budget_ms_at_generate": remaining_at_start,
         **_budget_runtime_updates(state)
     }

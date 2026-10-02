@@ -14,7 +14,6 @@ from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from application.agents.graph import graph
-from infrastructure.retrieval.vector_store import get_vector_store
 from evaluation.schema import EvalRecord
 from evaluation.aggregator import aggregate_results
 
@@ -24,8 +23,7 @@ from evaluation.aggregator import aggregate_results
 収集されたデータは schema.py で定義されたモデルに変換され、aggregator.py で集計された後、JSONレポートとして出力されます。
 """
 
-# 回答の類似性評価のための審査員（Judge）としてLLMを設定
-evaluator_llm = ChatOpenAI(model="gpt-4o", temperature=0)
+_EVALUATOR_CHAIN = None
 
 EVAL_PROMPT = ChatPromptTemplate.from_messages([
     ("system", "あなたは専門のエバリュエーターです。実際の回答と期待される回答を比較するのがあなたの任務です。"
@@ -34,42 +32,24 @@ EVAL_PROMPT = ChatPromptTemplate.from_messages([
     ("human", "期待される回答: {expected_answer}\nActual Answer: {actual_answer}\nScore:")
 ])
 
-evaluator_chain = EVAL_PROMPT | evaluator_llm
+def _get_evaluator_chain():
+    """Judge を最初の回答類似度評価時に初期化し、以降は再利用する。"""
+    global _EVALUATOR_CHAIN
+    if _EVALUATOR_CHAIN is None:
+        evaluator_llm = ChatOpenAI(model="gpt-4o", temperature=0)
+        _EVALUATOR_CHAIN = EVAL_PROMPT | evaluator_llm
+    return _EVALUATOR_CHAIN
 
 def assess_answer_similarity(expected: str, actual: str) -> float:
     """LLMを使用して期待される回答と実際の回答の類似度を評価します。"""
     if not actual or not actual.strip():
         return 0.0
     try:
-        response = evaluator_chain.invoke({"expected_answer": expected, "actual_answer": actual})
+        response = _get_evaluator_chain().invoke({"expected_answer": expected, "actual_answer": actual})
         return float(response.content.strip())
     except Exception as e:
         print(f"類似度の評価中にエラーが発生しました: {e}")
         return 0.0
-
-def get_bigrams(text: str) -> set:
-    """文字列からスペースを除去し、2文字ずつのペア（バイグラム）のセットを生成します（日本語の一致判定用）。"""
-    text = text.replace(" ", "").replace("　", "").replace("\n", "").lower()
-    if len(text) < 2:
-        return set([text])
-    return set([text[i:i+2] for i in range(len(text) - 1)])
-
-def assess_recall_at_k(query: str, expected_snippet: str, k: int = 3) -> bool:
-    """期待されるスニペット、またはそれに大きく一致する部分が取得されたドキュメントに含まれているかを確認します。"""
-    vector_store = get_vector_store()
-    docs = vector_store.similarity_search(query, k=k)
-    
-    # 日本語対応のため、文字のバイグラム（2文字のペア）で一致率を計算します
-    expected_bigrams = get_bigrams(expected_snippet)
-    
-    # 少なくとも1つのドキュメントに期待される内容の50%以上のバイグラムが含まれている場合、リコールをポジティブと見なします
-    for doc in docs:
-        doc_bigrams = get_bigrams(doc.page_content)
-        overlap = len(expected_bigrams.intersection(doc_bigrams))
-        if len(expected_bigrams) > 0 and (overlap / len(expected_bigrams)) > 0.5:
-            return True
-            
-    return False
 
 async def run_evaluation():
     """評価データセットを実行し、結果を集計してJSONレポートを保存します。"""
@@ -86,6 +66,8 @@ async def run_evaluation():
     for i, item in enumerate(data):
         question = item["question"]
         expected = item["expected_answer"]
+        expected_qt = item.get("expected_query_type")
+        expected_route = item.get("expected_route")
 
         import uuid
         session_id = str(uuid.uuid4())
@@ -143,7 +125,7 @@ async def run_evaluation():
         if not source_name:
             source_name = final_state.get("structured_query_source_name")
 
-        # 類似度とリコールの評価
+        # 回答類似度の評価（expected_answer は Retrieval Ground Truth ではない）
         sim_score = assess_answer_similarity(expected, actual_answer)
 
         # reason_code の精緻化: 単なる成功・失敗ではなく、ガードの作動や品質不足を区別する
