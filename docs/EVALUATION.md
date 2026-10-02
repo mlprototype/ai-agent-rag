@@ -37,6 +37,8 @@ uv run python -m evaluation.reporter --current evaluation/eval_results_latest.js
 
 各指標やコードの意味は以下の通りです。
 
+Latency の p50 は中央値、p95 は nearest-rank（昇順の `ceil(0.95 * n)` 番目）で計算します。1件の場合は両方ともその値を返し、空集合は0として扱います。
+
 | 指標 / 項目 | 意味 |
 | :--- | :--- |
 | **response_generated_rate** | システムが最終的に何らかの回答テキストを生成できた割合。 |

@@ -3,10 +3,41 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, Mock, patch
 
 from evaluation import evaluate
 from evaluation.schema import EvalRecord
+
+
+class LazyJudgeTests(unittest.TestCase):
+    def test_blank_answer_does_not_initialize_judge(self):
+        with patch.object(evaluate, "_get_evaluator_chain") as factory:
+            self.assertEqual(evaluate.assess_answer_similarity("expected", "  "), 0.0)
+        factory.assert_not_called()
+
+    def test_judge_is_initialized_once_and_reused(self):
+        prompt = MagicMock()
+        chain = prompt.__or__.return_value
+        with (
+            patch.object(evaluate, "_EVALUATOR_CHAIN", None),
+            patch.object(evaluate, "EVAL_PROMPT", prompt),
+            patch.object(evaluate, "ChatOpenAI") as llm,
+        ):
+            self.assertIs(evaluate._get_evaluator_chain(), chain)
+            self.assertIs(evaluate._get_evaluator_chain(), chain)
+            llm.assert_called_once_with(model="gpt-4o", temperature=0)
+            prompt.__or__.assert_called_once_with(llm.return_value)
+
+    def test_similarity_uses_lazy_judge(self):
+        chain = Mock()
+        chain.invoke.return_value = SimpleNamespace(content="0.75")
+        with patch.object(evaluate, "_get_evaluator_chain", return_value=chain):
+            self.assertEqual(evaluate.assess_answer_similarity("expected", "actual"), 0.75)
+        chain.invoke.assert_called_once_with({"expected_answer": "expected", "actual_answer": "actual"})
+
+    def test_judge_initialization_error_keeps_existing_fallback(self):
+        with patch.object(evaluate, "_get_evaluator_chain", side_effect=ValueError("mock missing key")):
+            self.assertEqual(evaluate.assess_answer_similarity("expected", "actual"), 0.0)
 
 
 class EvaluationRunnerTests(unittest.IsolatedAsyncioTestCase):

@@ -23,8 +23,7 @@ from evaluation.aggregator import aggregate_results
 収集されたデータは schema.py で定義されたモデルに変換され、aggregator.py で集計された後、JSONレポートとして出力されます。
 """
 
-# 回答の類似性評価のための審査員（Judge）としてLLMを設定
-evaluator_llm = ChatOpenAI(model="gpt-4o", temperature=0)
+_EVALUATOR_CHAIN = None
 
 EVAL_PROMPT = ChatPromptTemplate.from_messages([
     ("system", "あなたは専門のエバリュエーターです。実際の回答と期待される回答を比較するのがあなたの任務です。"
@@ -33,14 +32,20 @@ EVAL_PROMPT = ChatPromptTemplate.from_messages([
     ("human", "期待される回答: {expected_answer}\nActual Answer: {actual_answer}\nScore:")
 ])
 
-evaluator_chain = EVAL_PROMPT | evaluator_llm
+def _get_evaluator_chain():
+    """Judge を最初の回答類似度評価時に初期化し、以降は再利用する。"""
+    global _EVALUATOR_CHAIN
+    if _EVALUATOR_CHAIN is None:
+        evaluator_llm = ChatOpenAI(model="gpt-4o", temperature=0)
+        _EVALUATOR_CHAIN = EVAL_PROMPT | evaluator_llm
+    return _EVALUATOR_CHAIN
 
 def assess_answer_similarity(expected: str, actual: str) -> float:
     """LLMを使用して期待される回答と実際の回答の類似度を評価します。"""
     if not actual or not actual.strip():
         return 0.0
     try:
-        response = evaluator_chain.invoke({"expected_answer": expected, "actual_answer": actual})
+        response = _get_evaluator_chain().invoke({"expected_answer": expected, "actual_answer": actual})
         return float(response.content.strip())
     except Exception as e:
         print(f"類似度の評価中にエラーが発生しました: {e}")
