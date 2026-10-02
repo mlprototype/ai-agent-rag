@@ -54,7 +54,7 @@ ai-agent-rag/
 │       ├── compare_intent.py                #   Compare: 正規表現による A/B 抽出
 │       ├── compare_retrieval.py             #   Compare: subquery builder + 並列検索
 │       ├── compare_merge.py                 #   Compare: コンテキスト統合 + coverage 判定
-│       ├── compare_quality_gate.py          #   Compare 品質評価ユーティリティ（現状 graph 未接続）
+│       ├── compare_quality_gate.py          #   Compare 生成後の軽量ルール判定（対象言及・構造・取得状況）
 │       ├── coverage_checker.py              #   回答の網羅性チェック (entity/axis)
 │       ├── confidence.py                    #   Confidence 算出 + Dynamic TopK
 │       ├── prompt_loader.py                 #   Prompt Ops (local snapshot 読込 / prewarm log)

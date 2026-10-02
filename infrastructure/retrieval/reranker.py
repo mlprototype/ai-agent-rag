@@ -39,6 +39,7 @@ class CohereReranker(RerankerBase):
         self._client = None
 
         if not api_key:
+            logger.warning("Cohere API key が未設定のため Passthrough にフォールバックします")
             return
 
         try:

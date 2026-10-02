@@ -25,7 +25,7 @@
 | **リアルタイム生成（StreamingResponse）** | FastAPI `StreamingResponse` による `text/event-stream` 配信。通常は `generate` ノードの出力を逐次返却 |
 | **耐障害性（Stage Timeout & Retry）** | 外部API遅延に対する `asyncio.wait_for` タイムアウト（5秒）とフォールバックエラー処理 |
 | **Prompt Ops（Prompt Versioning）** | `prompts/` 配下のローカル snapshot を runtime 正本として利用し、FastAPI 起動時に prewarm。LangSmith Hub は同期元として扱う |
-| **自動評価パイプライン（Evaluation）** | Recall@3 と Answer Similarity（LLM-as-a-Judge）による検索精度の自動計測 |
+| **評価パイプライン（Evaluation）** | Answer Similarity（LLM-as-a-Judge）・Route・Latency・Fallback・Degradation の集計。Retrieval Ground Truth は持たず、検索精度評価は `spec-rag-qa` が担当 |
 
 ## Phase 2: Production RAG（✅ 実装完了）
 
@@ -67,7 +67,7 @@ Phase 3 では、Agentic RAG の制御面を強化し、ルーティング、比
 | :--- | :--- |
 | **Compare 分離** | `query_type=compare` を専用パイプラインに分離し、比較対象ごとの独立並列検索を実現 |
 | **Compare パイプライン** | intent 抽出 → target 別 retrieval → merge → 専用 generate の4段構成。coverage 不足時は通常 retrieval にフォールバック |
-| **Compare Metadata** | compare fast-path 成功時は `quality_gate_status` / `quality_gate_confidence` を state に記録（現状はプレースホルダ値） |
+| **Compare Metadata** | 生成後に既存の軽量ルールベース Gate を実行し、対象言及・回答構造・取得状況から verdict / confidence / warning を記録。意味的正しさの保証ではない |
 | **フォールバック** | 抽出失敗・coverage 不足時は `agentic_retrieval` へ自動フォールバック |
 
 ### Sprint 3: Retrieval Complex Budget / Fallback Control

@@ -67,7 +67,8 @@ class TestComparePipeline(unittest.IsolatedAsyncioTestCase):
             "Fine-tuning": {"context": "Fine-tuningはモデルを再学習する手法です。", "chunks": [chunk], "confidence": 0.8, "top_k": 3, "sources": []},
         }
 
-        mock_ainvoke.return_value = AIMessage(content="これが比較結果です")
+        answer = "共通点: RAGとFine-tuningはLLMに関する手法です。相違点: 検索と再学習。"
+        mock_ainvoke.return_value = AIMessage(content=answer)
 
         with patch("application.agents.graph.AnswerCritic.verify", new_callable=AsyncMock) as mock_critic:
             mock_critic.return_value = FakeAnswerVerdict()
@@ -83,7 +84,76 @@ class TestComparePipeline(unittest.IsolatedAsyncioTestCase):
             mock_compare_retrieve.assert_called_once()
 
             # answer が正しいこと
-            self.assertEqual(state.get("answer"), "これが比較結果です")
+            self.assertEqual(state.get("answer"), answer)
+            self.assertEqual(state.get("quality_gate_status"), "pass")
+            self.assertTrue(state.get("answer_ok"))
+            self.assertEqual(state.get("confidence"), state.get("quality_gate_confidence"))
+            self.assertNotEqual(state.get("quality_gate_confidence"), 0.8)
+            self.assertEqual(state.get("coverage_score"), 1.0)
+
+    @patch("application.agents.graph.run_compare_retrieval", new_callable=AsyncMock)
+    @patch("application.agents.graph.AgentRouter.route", new_callable=AsyncMock)
+    async def test_missing_target_coverage_keeps_retrieval_fallback(self, mock_router, mock_compare_retrieve):
+        from domain.models.retrieval_models import RetrievedChunk
+        mock_router.return_value = FakeRouteDecision()
+        mock_compare_retrieve.return_value = {
+            "RAG": {"chunks": [RetrievedChunk(doc_id="a", chunk_id="1", content="RAG")], "sources": []},
+            "Fine-tuning": {"chunks": [], "sources": []},
+        }
+        with (
+            patch("application.agents.graph.RetrievalService.run", new_callable=AsyncMock) as retrieval,
+            patch("application.agents.graph._get_generate_chain"),
+            patch("application.agents.graph.CompareQualityGate.evaluate") as gate,
+            patch("application.agents.graph.AnswerCritic.verify", new_callable=AsyncMock, return_value=FakeAnswerVerdict()),
+        ):
+            retrieval.return_value = {"context": "", "sources": [], "confidence": 0.0, "chunks": [], "top_k": 0}
+            state = await self.run_graph("RAGとFine-tuningの違い", thread_id="compare_missing_target")
+        retrieval.assert_awaited_once()
+        gate.assert_not_called()
+        self.assertTrue(state["compare_route_fallback_used"])
+        self.assertEqual(state["route"], "agentic_retrieval")
+        self.assertIsNone(state["quality_gate_status"])
+        self.assertIsNone(state["quality_gate_confidence"])
+
+    @patch("langchain_openai.ChatOpenAI.ainvoke", new_callable=AsyncMock)
+    async def test_gate_verdicts_and_scores_are_propagated(self, mock_ainvoke):
+        import time
+        from application.agents.graph import compare_generate_node
+        from domain.services.compare_quality_gate import CompareQualityGate
+
+        state = {
+            "original_query": "RAGとFine-tuningの違い",
+            "route": "agentic_retrieval",
+            "compare_targets": {"target_a": "RAG", "target_b": "Fine-tuning"},
+            "compare_doc_count_a": 1, "compare_doc_count_b": 1,
+            "compare_context_coverage_ok": True, "compare_extract_success": True,
+            "sources": [{"doc_id": "a"}, {"doc_id": "b"}],
+            "budget_started_at": time.monotonic(), "initial_budget_ms": 30000,
+        }
+        cases = (
+            ("共通点: RAGとFine-tuning。相違点: 検索と再学習。", "pass"),
+            ("RAGは検索、Fine-tuningは再学習です。", "warning"),
+            ("共通点: RAG。相違点: RAG。", "fail"),
+        )
+        for answer, expected_status in cases:
+            with self.subTest(status=expected_status):
+                mock_ainvoke.return_value = AIMessage(content=answer)
+                with patch.object(CompareQualityGate, "evaluate", wraps=CompareQualityGate.evaluate) as gate:
+                    result = await compare_generate_node(state)
+                gate.assert_called_once_with(
+                    answer=answer, target_a="RAG", target_b="Fine-tuning", doc_count_a=1,
+                    doc_count_b=1, coverage_ok=True, sources_count=2, extract_success=True,
+                )
+                verdict, confidence, warning, missing = CompareQualityGate.evaluate(answer, "RAG", "Fine-tuning", 1, 1, True, 2, True)
+                self.assertEqual(result["quality_gate_status"], expected_status)
+                self.assertEqual(result["answer_ok"], verdict == "pass")
+                self.assertEqual(result["confidence"], confidence)
+                self.assertEqual(result["quality_gate_confidence"], confidence)
+                self.assertNotEqual(confidence, 0.8)
+                self.assertEqual(result["warning"], warning)
+                self.assertEqual(result["missing_aspects"], missing)
+                if verdict != "pass":
+                    self.assertTrue(result["quality_gate_reasons"])
 
     # ---- Test 2: 抽出失敗時に agentic_retrieval にフォールバックする ----
     @patch("application.agents.graph.AgentRouter.route", new_callable=AsyncMock)
