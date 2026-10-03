@@ -8,11 +8,11 @@ from domain.services.structured_query_datasets import MOCK_SALES_DATA, MOCK_INVE
 
 DB_PATH = "data/structured_query.db"
 
-def seed_db():
+def seed_db(db_path: str = DB_PATH):
     # Ensure data directory exists
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
     
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
     # 再実行ポリシー: 既存テーブルを削除して再作成
@@ -55,7 +55,7 @@ def seed_db():
         
     conn.commit()
     conn.close()
-    print(f"Database seeded successfully at {DB_PATH}")
+    print(f"Database seeded successfully at {db_path}")
 
 if __name__ == "__main__":
     seed_db()

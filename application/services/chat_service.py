@@ -830,11 +830,29 @@ class ChatService:
 
         inputs = {"messages": [HumanMessage(content=request.question)]}
         config = {"configurable": {"thread_id": request.session_id}}
+        streamed_text = ""
+        final_answer = ""
+        buffer_generation = False
 
         async for event in graph.astream_events(inputs, config=config, version="v2"):
             kind = event["event"]
             node = event.get("metadata", {}).get("langgraph_node")
+            if kind == "on_chain_start" and node == "generate":
+                state = event.get("data", {}).get("input")
+                # Definition guard は生成後に本文を置き換え得るため、確定まで待つ。
+                if isinstance(state, Mapping) and state.get("query_type") == "definition":
+                    buffer_generation = True
             if kind == "on_chat_model_stream" and node == "generate":
                 chunk = event["data"]["chunk"].content
-                if chunk:
+                if chunk and not buffer_generation:
+                    streamed_text += chunk
                     yield chunk
+            if kind == "on_chain_end" and not event.get("parent_ids"):
+                output = event.get("data", {}).get("output")
+                if isinstance(output, Mapping):
+                    final_answer = str(output.get("answer") or "")
+
+        if final_answer and not streamed_text:
+            yield final_answer
+        elif final_answer.startswith(streamed_text) and len(final_answer) > len(streamed_text):
+            yield final_answer[len(streamed_text):]

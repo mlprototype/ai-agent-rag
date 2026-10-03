@@ -43,10 +43,12 @@ Latency の p50 は中央値、p95 は nearest-rank（昇順の `ceil(0.95 * n)`
 | :--- | :--- |
 | **response_generated_rate** | システムが最終的に何らかの回答テキストを生成できた割合。 |
 | **answer_ok_rate** | 内部品質判定（Critic / Gate等）を pass した割合。 |
-| **fallback_level** | 縮退動作の度合い。`LEVEL_0`（正常）から、予算不足等によるスキップが増えるほど数値が上がります。 |
+| **fallback_level** | Runtimeの縮退状態（`critic_skip`、`single_retrieval_fallback`、`minimal_answer`等）を保持します。縮退なしは`NONE`。段階名がないfallbackは`LEVEL_N`で記録します。 |
 | **warning_codes** | `TIMEOUT_ROUTER`（ルーター遅延）や `LOW_CONFIDENCE`（低信頼度）など、内部的な注意状態を示す詳細コード。 |
 | **reason_code** | 実行結果のステータス。`SUCCESS` 以外に `unsupported_query`（未対応）や `validation_failed`（検証失敗）などがあります。 |
 | **source_name** | `structured_query` においては、参照した**データソース識別子**（例: SQLite）を指します。検索における引用元（Citation source）とは別物です。 |
+
+`critic_degraded` はCriticのskip理由・fallback・timeout・skipped stagesから判定します。`must_generate`だけではCritic縮退と見なしません。Strict insufficientは`NO_DATA`と検索品質`low`で記録し、構造化クエリの拒否理由（`write_operation_blocked`等）は保持してfail-safe率へ集計します。警告文がある場合は、warning codesが空でも`warning=True`です。
 
 ## 4. 保存先と管理ルール
 

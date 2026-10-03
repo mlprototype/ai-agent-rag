@@ -3,10 +3,12 @@ from pydantic import BaseModel, Field
 from typing import List
 import os
 import tempfile
+import logging
 
 from domain.services.ingestion_service import IngestionService
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 SUPPORTED_EXTENSIONS = {'.md', '.markdown', '.html', '.htm', '.txt'}
 
@@ -34,11 +36,12 @@ async def ingest_file(file: UploadFile = File(...)):
         )
     
     # アップロードされたファイルを一時ファイルに保存
+    tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            tmp_path = tmp.name
             content = await file.read()
             tmp.write(content)
-            tmp_path = tmp.name
         
         IngestionService.ingest_file(tmp_path)
         return IngestResponse(
@@ -49,8 +52,13 @@ async def ingest_file(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"取り込み中にエラーが発生しました: {str(e)}")
     finally:
         # 一時ファイルを削除
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                logger.warning("Upload temporary-file cleanup failed: %s", tmp_path, exc_info=True)
 
 @router.post("/ingest/directory", response_model=IngestResponse)
 async def ingest_directory(request: IngestDirectoryRequest):

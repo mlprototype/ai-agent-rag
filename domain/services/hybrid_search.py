@@ -3,7 +3,7 @@ import logging
 import os
 from typing import List
 from domain.models.retrieval_models import RetrievedChunk
-from infrastructure.retrieval.vector_store import get_async_vector_store
+from infrastructure.retrieval.vector_store import managed_async_vector_store
 from infrastructure.retrieval.keyword_search import KeywordSearch
 
 logger = logging.getLogger(__name__)
@@ -24,6 +24,11 @@ def _normalize_scores(scores: List[float]) -> List[float]:
     if max_s - min_s < 1e-9:
         return [0.5] * len(scores)
     return [(s - min_s) / (max_s - min_s) for s in scores]
+
+
+def _distance_to_similarity(distance: float) -> float:
+    """PGVector の既定 cosine distance を、距離に対して単調減少する値へ変換。"""
+    return 1.0 - distance
 
 
 class HybridSearch:
@@ -71,7 +76,11 @@ class HybridSearch:
     @classmethod
     async def _search_single_query(cls, query: str) -> List[RetrievedChunk]:
         """単一クエリで Vector + Keyword を並列実行し、スコアを統合する。"""
-        vector_store = get_async_vector_store()
+        async with managed_async_vector_store() as vector_store:
+            return await cls._search_with_store(query, vector_store)
+
+    @classmethod
+    async def _search_with_store(cls, query: str, vector_store) -> List[RetrievedChunk]:
 
         # Vector Search と Keyword Search を並列実行
         vector_task = vector_store.asimilarity_search_with_score(query, k=RETRIEVE_K_VECTOR)
@@ -89,7 +98,7 @@ class HybridSearch:
             # pgvector のスコアはコサイン距離 → 類似度に変換
             raw_scores = []
             for doc, score in vector_results:
-                similarity = 1.0 - score if score <= 1.0 else score
+                similarity = _distance_to_similarity(score)
                 raw_scores.append(similarity)
 
             norm_scores = _normalize_scores(raw_scores)

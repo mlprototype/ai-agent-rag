@@ -186,6 +186,8 @@ uv run uvicorn api.main:app --reload
 CLI は別ターミナルで `uv run python main.py` を実行します。文書の追加は API docs の `/ingest/file` を利用できます。
 サンプル文書は最小セットなので、比較したい両対象の根拠は別途取り込む必要があります。
 
+`POST /ask/stream` は通常検索の生成トークンを配信し、トークンが出ない直接回答・比較・構造化クエリ・情報不足回答は、同じGraph実行の最終回答で補完します。Definitionは生成後のguardによる本文置換に備え、確定後に配信します。
+
 ## Known Limitations
 
 | 領域 | 現在の制約 |
@@ -197,7 +199,7 @@ CLI は別ターミナルで `uv run python main.py` を実行します。文書
 | Budget / Failure | 外部 API の latency に依存し、全経路の厳密な締切ではない。生成や Compare 全体に残 Budget による中断はなく、未捕捉の例外もある。 |
 | Confidence / Grounding | confidence はスコア・Critic・固定値を組み合わせた内部指標で、正答確率ではない。Prompt と Critic による根拠判定は事実性を保証しない。 |
 | Memory | `MemorySaver` はプロセス内で保持し、再起動で消失する。 |
-| Structured Query | 売上・在庫サンプルと限定された集計・条件の解析に対応。任意の Text-to-SQL や JOIN は扱わない。 |
+| Structured Query | 売上・在庫サンプルと限定された集計・条件の解析に対応。明示された年と四半期を保持し、未登録期間はデータなしと返す。年なしの四半期は互換性のため2025年とする。任意の Text-to-SQL や JOIN は扱わない。 |
 | Ingestion | Markdown / HTML / TXT のみ。PDF は未対応で、ディレクトリ取り込みは直下のみ。 |
 | Evaluation | データセットは回答期待値のみを持ち、route / query type 期待値は任意。Retrieval Ground Truth はなく、検索精度を測定しない。検索精度評価は `spec-rag-qa` が担当する。 |
 

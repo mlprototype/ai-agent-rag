@@ -15,7 +15,7 @@ def format_structured_result(
     """
     SQL 実行結果の行データからユーザー向けのサマリーを生成し、StructuredQueryResult に整形します。
     """
-    if not rows:
+    if not rows or (intent.operation in {"sum", "avg"} and rows[0].get("result") is None):
         summary = "指定された条件に一致するデータが見つかりませんでした。"
     else:
         if intent.operation == "count":
