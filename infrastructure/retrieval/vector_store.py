@@ -1,4 +1,5 @@
 import os
+from contextlib import asynccontextmanager
 from langchain_postgres import PGVector
 from sqlalchemy.ext.asyncio import create_async_engine
 from langchain_core.documents import Document
@@ -30,14 +31,18 @@ def get_vector_store() -> PGVector:
     )
     return vector_store
 
-def get_async_vector_store() -> PGVector:
-    """非同期psycopgエンジンを使用して、非同期PGVectorストアをインスタンス化して返します。"""
+def _create_vector_engine():
     connection_string = get_connection_string().replace("postgresql+psycopg", "postgresql+psycopg_async")
-    
+    return create_async_engine(connection_string, pool_size=5, max_overflow=10)
+
+
+def get_async_vector_store(*, engine=None) -> PGVector:
+    """非同期psycopgエンジンを使用して、非同期PGVectorストアをインスタンス化して返します。"""
     embeddings = get_embeddings()
     collection_name = "agentic_rag_docs"
     
-    engine = create_async_engine(connection_string, pool_size=5, max_overflow=10)
+    if engine is None:
+        engine = _create_vector_engine()
     
     vector_store = PGVector(
         embeddings=embeddings,
@@ -46,6 +51,16 @@ def get_async_vector_store() -> PGVector:
         use_jsonb=True,
     )
     return vector_store
+
+
+@asynccontextmanager
+async def managed_async_vector_store():
+    """1検索の engine を所有し、成功・例外・cancel 時に同じloop内でdisposeする。"""
+    engine = _create_vector_engine()
+    try:
+        yield get_async_vector_store(engine=engine)
+    finally:
+        await engine.dispose()
 
 def seed_database_if_empty():
     """テスト用に初期ドキュメントをデータベースにシードするためのヘルパーメソッド。"""

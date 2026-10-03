@@ -97,6 +97,35 @@ class ExtractiveCompressor:
             return cls._fallback(chunks)
 
     @staticmethod
+    def canonical_context(
+        compression: CompressionResult,
+        chunks: List[RetrievedChunk],
+        sources: list[dict],
+    ) -> str:
+        """文タグを source_spans と Source identity に基づく numeric citation へ変換。"""
+        source_ids = {
+            (source["doc_id"], source["chunk_id"]): source["citation_id"]
+            for source in sources
+        }
+        spans = {(span.doc_id, span.chunk_id, span.sentence_idx) for span in compression.source_spans}
+        tag_ids = {}
+        for index, chunk in enumerate(chunks, start=1):
+            for doc_id, chunk_id, sentence_idx in spans:
+                if (doc_id, chunk_id) == (chunk.doc_id, chunk.chunk_id):
+                    citation_id = source_ids.get((doc_id, chunk_id))
+                    if citation_id is not None:
+                        tag_ids[f"[doc{index}-s{sentence_idx + 1}]"] = citation_id
+
+        def replace_tag(match):
+            citation_id = tag_ids.get(match.group(0))
+            if citation_id is None:
+                logger.warning("Unresolved compression citation removed: %s", match.group(0))
+                return ""
+            return f"[{citation_id}]"
+
+        return re.sub(r"\[doc\d+-s\d+\]", replace_tag, compression.compressed_text)
+
+    @staticmethod
     def _split_sentences(text: str) -> List[str]:
         """テキストを文単位に分割する。日本語の句点と英語のピリオドに対応。"""
         # 日本語句点（。）、英語ピリオド+空白、改行で分割

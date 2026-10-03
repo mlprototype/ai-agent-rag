@@ -120,7 +120,7 @@ class RetrievalService:
             })
 
         return PreparedContext(
-            context=compression.compressed_text,
+            context=ExtractiveCompressor.canonical_context(compression, chunks, sources),
             sources=sources,
         )
 

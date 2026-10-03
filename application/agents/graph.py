@@ -538,8 +538,10 @@ async def initialize_node(state: AgentState) -> dict[str, Any]:
         "structured_query_target_metric": None,
         "structured_query_filters": {},
         "structured_query_target_dataset": None,
+        "structured_query_reason_code": None,
         "retrieval_top_k": None,
         "observed_tool_calls": [],
+        "usage": {},
         "budget_started_at": time.monotonic(),
         "initial_budget_ms": initial_budget_ms,
         "remaining_budget_ms": initial_budget_ms,
@@ -568,6 +570,7 @@ async def initialize_node(state: AgentState) -> dict[str, Any]:
         "retrieval_success_count": 0,
         "warning_codes": [],
         "retrieval_quality_level": "high",
+        "strict_insufficient_response": False,
     }
 
 
@@ -1188,6 +1191,7 @@ async def structured_query_node(state: AgentState) -> dict[str, Any]:
         "structured_query_target_metric": result.target_metric,
         "structured_query_filters": result.filters,
         "structured_query_target_dataset": result.target_dataset,
+        "structured_query_reason_code": result.error_message,
         "observed_tool_calls": observed_tool_calls,
         "remaining_budget_ms_at_generate": remaining_at_start,
         **runtime_updates,
@@ -1203,7 +1207,11 @@ async def answer_critic_node(state: AgentState) -> dict[str, Any]:
     skip_reason = _should_skip_answer_critic(state | _budget_runtime_updates(state))
     if skip_reason is not None:
         coverage = _coverage_assessment_for_state(state, use_sources=True)
-        answer_ok = not coverage.required_missing_aspects
+        answer_ok = bool(
+            state.get("answer_ok", True)
+            and not state.get("strict_insufficient_response", False)
+            and not coverage.required_missing_aspects
+        )
         confidence = round(min(state.get("confidence", 0.5), 0.35 if not answer_ok else state.get("confidence", 0.5)), 2)
         return {
             "answer_ok": answer_ok,
@@ -1224,7 +1232,11 @@ async def answer_critic_node(state: AgentState) -> dict[str, Any]:
     )
     if timeout_seconds <= 0:
         coverage = _coverage_assessment_for_state(state, use_sources=True)
-        answer_ok = not coverage.required_missing_aspects
+        answer_ok = bool(
+            state.get("answer_ok", True)
+            and not state.get("strict_insufficient_response", False)
+            and not coverage.required_missing_aspects
+        )
         confidence = round(min(state.get("confidence", 0.5), 0.35 if not answer_ok else state.get("confidence", 0.5)), 2)
         return {
             "answer_ok": answer_ok,
@@ -1251,7 +1263,7 @@ async def answer_critic_node(state: AgentState) -> dict[str, Any]:
         answer_verdict=verdict,
     )
     final_confidence = _apply_confidence_cap(confidence, state, verdict)
-    answer_ok = verdict.verdict == "PASS"
+    answer_ok = verdict.verdict == "PASS" and not state.get("strict_insufficient_response", False)
 
     return {
         "answer_ok": answer_ok,

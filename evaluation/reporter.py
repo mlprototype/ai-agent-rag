@@ -147,7 +147,11 @@ def build_view_context(baseline: Optional[EvalReport], current: EvalReport, titl
         res_gen = sum(1 for r in sq_records if r.response_generated)
         ans_ok = sum(1 for r in sq_records if r.answer_ok)
         # ブロック系（fail-safe）の判定: reason_code が特定のコード
-        block_codes = {"unsupported_query", "validation_failed", "join_like_query_blocked", "write_operation_blocked"}
+        block_codes = {
+            "unsupported_query", "validation_failed", "join_like_query_blocked",
+            "write_operation_blocked", "unknown_dataset", "unknown_operation",
+            "unknown_field", "ambiguous_query",
+        }
         fail_safe_count = sum(1 for r in sq_records if r.reason_code in block_codes)
         
         # ソース別件数

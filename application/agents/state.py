@@ -61,6 +61,7 @@ class AgentState(TypedDict, total=False):
     structured_query_target_metric: str | None
     structured_query_filters: dict[str, Any]
     structured_query_target_dataset: str | None
+    structured_query_reason_code: str | None
     retrieval_top_k: int | None
     observed_tool_calls: list[dict[str, Any]]
     usage: dict[str, Any]

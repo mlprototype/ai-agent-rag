@@ -96,12 +96,15 @@ def parse_structured_query_intent(query: str) -> StructuredQueryIntent:
         
     # Filters 判定
     filters = {}
-    if re.search(r'q1|第1四半期', query_lower):
-        filters["period"] = "2025-Q1"
-    elif re.search(r'q2|第2四半期', query_lower):
-        filters["period"] = "2025-Q2"
-    elif re.search(r'q3|第3四半期', query_lower):
-        filters["period"] = "2025-Q3"
+    quarter = re.search(r'q([1-4])(?!\d)|第([1-4])四半期', query_lower)
+    year = re.search(r'(?<!\d)(\d{4})(?:年)?(?!\d)', query_lower)
+    if quarter:
+        quarter_number = quarter.group(1) or quarter.group(2)
+        # 年がない既存の Q1 入力は、サンプルの基準年との互換性を維持。
+        filters["period"] = f"{year.group(1) if year else '2025'}-Q{quarter_number}"
+    elif year:
+        # year-only を全期間の集計へ silently 縮退させない。
+        filters["year"] = year.group(1)
         
     return StructuredQueryIntent(
         operation=operation,  # type: ignore

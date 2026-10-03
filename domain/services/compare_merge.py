@@ -76,11 +76,7 @@ def merge_compare_contexts(
                     old_num = int(id_str)
                     if old_num in mapping:
                         new_ids.append(str(mapping[old_num]))
-                    else:
-                        new_ids.append(id_str)
-                else:
-                    new_ids.append(id_str)
-            return f"[{', '.join(new_ids)}]"
+            return f"[{', '.join(new_ids)}]" if new_ids else ""
             
         remapped_context = re.sub(r"\[([\d,\s]+)\]", replace_citation, context)
         return remapped_context

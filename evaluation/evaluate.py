@@ -51,6 +51,18 @@ def assess_answer_similarity(expected: str, actual: str) -> float:
         print(f"類似度の評価中にエラーが発生しました: {e}")
         return 0.0
 
+
+def _critic_degraded(state: dict) -> bool:
+    critic_stages = {"answer_critic", "retrieval_critic"}
+    return bool(
+        state.get("answer_critic_skipped_reason")
+        or state.get("retrieval_critic_skipped_reason")
+        or str(state.get("critique_reason", "")).startswith("critic_fallback:")
+        or critic_stages.intersection(state.get("skipped_stages", []))
+        or critic_stages.intersection(state.get("fallback_stages", []))
+        or critic_stages.intersection(state.get("timeout_stages", []))
+    )
+
 async def run_evaluation():
     """評価データセットを実行し、結果を集計してJSONレポートを保存します。"""
     dataset_path = os.path.join(os.path.dirname(__file__), "dataset.json")
@@ -90,7 +102,7 @@ async def run_evaluation():
         
         # Sprint 3 以降の拡張フィールド
         is_retrieval_degraded = bool(final_state.get("retrieval_degraded", False))
-        is_critic_degraded = bool(final_state.get("must_generate", False))
+        is_critic_degraded = _critic_degraded(final_state)
         is_strict_insufficient = bool(final_state.get("strict_insufficient_response", False))
         
         timeout_stages = list(final_state.get("timeout_stages", []))
@@ -99,21 +111,20 @@ async def run_evaluation():
         
         # 警告コードの取得または生成
         warning_codes = list(final_state.get("warning_codes", []))
-        if not warning_codes:
-            if timeout_stages:
-                warning_codes.extend([f"TIMEOUT_{s.upper()}" for s in timeout_stages])
-            if router_uncertain:
-                warning_codes.append("ROUTER_UNCERTAIN")
-            if answer_confidence < 0.3 and actual_answer:
-                warning_codes.append("LOW_CONFIDENCE")
+        warning_codes.extend(f"TIMEOUT_{s.upper()}" for s in timeout_stages)
+        if router_uncertain:
+            warning_codes.append("ROUTER_UNCERTAIN")
+        if answer_confidence < 0.3 and actual_answer:
+            warning_codes.append("LOW_CONFIDENCE")
+        warning_codes = list(dict.fromkeys(warning_codes))
 
         # 検索品質の補正（システム側が high と言っていても degraded なら補正）
         # タイムアウト等で縮退が発生している場合、たとえ graph が high と主張しても実態は中程度以下とする
         retrieval_quality = final_state.get("retrieval_quality_level")
         if not retrieval_quality or (is_retrieval_degraded and retrieval_quality == "high"):
             retrieval_quality = "medium" if is_retrieval_degraded else "high"
-            if is_strict_insufficient:
-                retrieval_quality = "low"
+        if is_strict_insufficient:
+            retrieval_quality = "low"
             
         sources = final_state.get("sources", [])
         source_name = None
@@ -133,6 +144,8 @@ async def run_evaluation():
             reason_code = "ERROR"
         elif is_strict_insufficient:
             reason_code = "NO_DATA"  # 検索結果がゼロで回答拒否
+        elif route == "structured_query_tool" and final_state.get("structured_query_reason_code"):
+            reason_code = final_state["structured_query_reason_code"]
         elif not answer_ok:
             if "low_confidence_definition_guard" in warning_codes:
                 reason_code = "GUARD_BLOCK"  # 低確信度ガードによる回答拒否
@@ -144,24 +157,30 @@ async def run_evaluation():
             reason_code = "SUCCESS"
 
         # EvalRecordへの変換
+        runtime_fallback_level = final_state.get("fallback_level")
+        fallback_level = (
+            runtime_fallback_level
+            if runtime_fallback_level not in (None, "full_path", "NONE")
+            else f"LEVEL_{len(fallback_stages)}" if fallback_stages else "NONE"
+        )
         record = EvalRecord(
             query=question,
             query_type=query_type,
             route=route,
             answer=actual_answer,
             confidence=answer_confidence,
-            fallback_level=f"LEVEL_{len(fallback_stages)}" if fallback_stages else "NONE",
+            fallback_level=fallback_level,
             latency_ms=latency_ms,
             retrieval_quality_level=retrieval_quality,
             source_name=source_name,
             similarity=sim_score,
             response_generated=bool(actual_answer and actual_answer.strip()),
             answer_ok=answer_ok,
-            degraded=is_retrieval_degraded or is_critic_degraded or is_strict_insufficient or bool(fallback_stages),
+            degraded=is_retrieval_degraded or is_critic_degraded or is_strict_insufficient or fallback_level != "NONE" or bool(final_state.get("partial_retrieval_used")),
             critic_degraded=is_critic_degraded,
             retrieval_degraded=is_retrieval_degraded,
             strict_insufficient_response=is_strict_insufficient,
-            warning=bool(warning_codes),
+            warning=bool(final_state.get("warning") or warning_codes),
             warning_codes=warning_codes,
             reason_code=reason_code,
             expected_query_type=expected_qt,
